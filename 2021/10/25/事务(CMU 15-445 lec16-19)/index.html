@@ -1,0 +1,275 @@
+<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8"><meta http-equiv="X-UA-Compatible" content="IE=edge"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="author" content="Bruce"><link rel="alternative" href="/atom.xml" title="布鲁斯的技术小屋" type="application/atom+xml"><link rel="icon" href="/favicon.png"><title>事务部分 - 布鲁斯的技术小屋</title>
+<link rel="stylesheet" href="/css/main.css">
+
+<link rel="stylesheet" href="/js/fancybox/jquery.fancybox.min.css">
+<!--[if lt IE 9]><script>(function(a,b){a="abbr article aside audio bdi canvas data datalist details dialog figcaption figure footer header hgroup main mark meter nav output progress section summary template time video".split(" ");for(b=a.length-1;b>=0;b--)document.createElement(a[b])})()</script><![endif]-->
+<script src="/js/jquery-3.1.1.min.js"></script>
+
+<script src="/js/fancybox/jquery.fancybox.min.js"></script>
+<meta name="generator" content="Hexo 5.4.0"></head><body style="opacity:0"><header class="head"><h1 class="head-title u-fl"><a href="/">布鲁斯的技术小屋</a></h1><nav class="head-nav u-fr"><ul class="head-nav__list"><li class="head-nav__item"><a class="head-nav__link" href="/tags">标签</a></li><li class="head-nav__item"><a class="head-nav__link" href="/archives">目录</a></li></ul></nav></header><main class="main"><article class="post"><header class="post__head"><time class="post__time" datetime="2021-10-24T19:32:57.000Z">2021 - 10 - 25 03:32:57</time><h1 class="post__title"><a href="/2021/10/25/%E4%BA%8B%E5%8A%A1(CMU%2015-445%20lec16-19)/">事务部分</a></h1><div class="post__main echo"><p>（未完待续）</p>
+<h1 id="事务"><a href="#事务" class="headerlink" title="事务"></a>事务</h1><ol>
+<li>DB中执行的最小单元</li>
+<li>具有ACID特性<ol>
+<li>A——原子性</li>
+<li>C——一致性</li>
+<li>I——隔离性</li>
+<li>D——持久性</li>
+</ol>
+</li>
+<li>控制命令<ol>
+<li>BEGIN</li>
+<li>COMMIT</li>
+<li>ABORT</li>
+</ol>
+</li>
+<li>影子分页（属于No-Steal + Force）<ol>
+<li>数据库维护两个独立的数据版本（有点类似于主从复制模型）<ol>
+<li>master——负责其他事务的读取</li>
+<li>shadow——负责写事务的修改操作</li>
+</ol>
+</li>
+<li>提交完成后，将shadow版本切换至master版本</li>
+<li>用例——LMDB</li>
+<li>日志<ol>
+<li>Redo日志（仅记录修改后的新值，所以只能重做，不能回滚）（属于No-Steal + Force） <ol>
+<li>每次修改，产生redo日志</li>
+<li>事务commit前，事务所有修改不能落盘</li>
+<li>事务commit成功前，事务的所有log必须先落盘</li>
+</ol>
+</li>
+<li>Undo/Redo日志（同时记录旧值和新值，所以既可以实现回滚，又可以实现重做）（属于Steal + No-Force，对大事务友好，也减轻了写盘压力）</li>
+</ol>
+</li>
+<li>日志回收</li>
+</ol>
+</li>
+</ol>
+<h2 id="隔离性"><a href="#隔离性" class="headerlink" title="隔离性"></a>隔离性</h2><p>如何保证隔离性的同时实现并行？</p>
+<p>想像A、B余额都为1000，事务T1:A转账100给B，事务T2：支付A、B 6%的利息</p>
+<p>T1：               T2:</p>
+<p>BEGIN            BEGIN </p>
+<p>A -= 100         A *= 1.06</p>
+<p>B += 100        B *= 1.06</p>
+<p>COMMIT        COMMIT    </p>
+<ol start="2">
+<li><p>矛盾</p>
+<ol>
+<li>两个事务，在同一块数据上，而且至少有一个涉及写操作</li>
+</ol>
+</li>
+<li><p>隔离级别（从低到高）</p>
+<ol>
+<li><p>Read Uncommited（导致脏读）</p>
+<p><img src="/2021/10/25/%E4%BA%8B%E5%8A%A1(CMU%2015-445%20lec16-19)/Users\bruce\AppData\Roaming\Typora\typora-user-images\image-20210818173642476.png" alt="image-20210818173642476"></p>
+</li>
+<li><p>Read Committed（可能会导致不可重复读）</p>
+<p><img src="/2021/10/25/%E4%BA%8B%E5%8A%A1(CMU%2015-445%20lec16-19)/image-20210818172231351.png" alt="image-20210818172231351">            MVCC可以解决（MVCC中，T1第二个R(A)仍然读为$10)</p>
+</li>
+<li><p>Repeatable Read（可能会导致幻读）（MySQL默认级别，InnoDB通过MVCC解决幻读问题）</p>
+</li>
+<li><p>Serializable</p>
+</li>
+</ol>
+</li>
+<li><p>问题</p>
+<ol>
+<li>不可重复读</li>
+<li>脏读</li>
+<li>写写冲突</li>
+</ol>
+</li>
+<li><p>可串行化</p>
+<ol>
+<li>矛盾可串行化</li>
+<li>视图可串行化</li>
+</ol>
+</li>
+<li><p>如何可串行化</p>
+<ol>
+<li>交换</li>
+<li>依赖图</li>
+</ol>
+</li>
+</ol>
+<h3 id="悲观"><a href="#悲观" class="headerlink" title="悲观"></a>悲观</h3><p>让问题第一时间不发生（严格）</p>
+<ol>
+<li>2PL<ol>
+<li>锁种类<ol>
+<li>Lock<ol>
+<li>隔离事务</li>
+<li>保护数据库的内容</li>
+<li>处于事务内</li>
+<li>有共享锁、排他锁、更新锁</li>
+</ol>
+</li>
+<li>Latch<ol>
+<li>隔离线程</li>
+<li>保护内存中的数据结构</li>
+<li>位于临界区</li>
+</ol>
+</li>
+</ol>
+</li>
+<li>2PL<ol>
+<li>共享锁和排他锁</li>
+<li>不需要提前知道事务中的内容</li>
+<li>分为两阶段<ol>
+<li>growing——可以通过管理器获取锁</li>
+<li>shrinking——只能释放，不能获取</li>
+</ol>
+</li>
+<li>缺陷<ol>
+<li>可能引起级联中止</li>
+<li>死锁</li>
+<li>仍然会脏读——需要严格2PL<ol>
+<li><img src="/2021/10/25/%E4%BA%8B%E5%8A%A1(CMU%2015-445%20lec16-19)/image-20210812235111600.png" alt="image-20210812235111600"></li>
+<li>事务提交前不解锁</li>
+<li>No-steal，不会引发级联中止</li>
+</ol>
+</li>
+</ol>
+</li>
+</ol>
+</li>
+<li>死锁检测和预防<ol>
+<li>选择受害人</li>
+</ol>
+</li>
+</ol>
+</li>
+</ol>
+<h3 id="乐观"><a href="#乐观" class="headerlink" title="乐观"></a>乐观</h3><p>2PL假设事务内部很多冲突</p>
+<p>但是如果问题很少发生，可以当其发生时才解决</p>
+<ol>
+<li><p>时间戳排序</p>
+<ol>
+<li>Basic T/O<ol>
+<li>Ts(Ti) ——每个事物开始执行的时标<ol>
+<li>系统时钟作为时间戳</li>
+<li>逻辑计数器</li>
+</ol>
+</li>
+<li>写时间戳W-Ts(X)——成功实行W(X)的所有事物的最大时间戳</li>
+<li>读时间戳R-Ts(X)——成功实行R(X)的所有事物的最大时间戳</li>
+<li>例子<ol>
+<li>Ti需要R(X)<ol>
+<li>if Ts(Ti) &lt; W-Ts(X)， 证明此时读到的值已被覆盖；反之则可以读，R-Ts(X)设为max(R-Ts(X), Ts(Ti))</li>
+</ol>
+</li>
+<li>Ti需要W(X)<ol>
+<li>if Ts(Ti) &lt; R-Ts(X)， 证明此时读到的值是先前需要的值；反之则可以写，W-Ts(X)设为max(W-Ts(X), Ts(Ti))</li>
+<li>if Ts(Ti) &lt; W-Ts(X)， 证明此时读到的值已过时；反之则可以写，W-Ts(X)设为max(W-Ts(X), Ts(Ti))</li>
+</ol>
+</li>
+<li><img src="/2021/10/25/%E4%BA%8B%E5%8A%A1(CMU%2015-445%20lec16-19)/image-20210815180249875.png" alt="image-20210815180249875">    此时T1的W(A)执行是满足2PL的，但不满足时间戳排序（Ts(T1) = 1 &lt; W-Ts(A) = 2)，故引出托马斯写规则</li>
+</ol>
+</li>
+<li>Thomas写规则<ol>
+<li>if Ts(Ti) &lt; R-Ts(X)，中止事物并重启Ti</li>
+<li>if Ts(Ti) &lt; W-Ts(X)，托马斯规则认为：忽略写，允许事物执行</li>
+<li>其他情况，允许Ti写，并更新W—Ts(X)</li>
+</ol>
+</li>
+<li>缺陷<ol>
+<li><img src="/2021/10/25/%E4%BA%8B%E5%8A%A1(CMU%2015-445%20lec16-19)/image-20210815181241266.png" alt="image-20210815181241266">                             违反了可恢复？</li>
+<li>开销大，需要复制到本地工作区</li>
+<li>长事物中途可能需要暂停</li>
+</ol>
+</li>
+</ol>
+</li>
+<li>Optimistic<ol>
+<li>创建一个private workspace for each tx</li>
+<li>当tx提交，DBMS检查是否有冲突，如果没有就写到全局区域内</li>
+<li>步骤<ol>
+<li>读阶段——读入到局部变量中</li>
+<li>验证阶段——判断是否可以写且不违反可串行性<ol>
+<li>Start(Ti)/Validation(Ti)/Finish(Ti)，将validation(Ti)作为事务Ti的时间戳</li>
+<li>有效性检测的原则（Ts(Tk) &lt; Ts(Ti))，需满足两者之一<ol>
+<li>Finish(Tk) &lt; Start(Ti)——这保证了可串行性（较强）</li>
+<li>Tk所写的数据项和Ti所读不相交，且Tk写完成的时间在Ti验证之前(Start(Ti) &lt; Finish(Tk) &lt; Validation(Ti))。这个保证可串行性<ol>
+<li>因为前提Tk的写不影响Ti的读，所有两个阶段可以重叠</li>
+<li>Tk写完，Ti还没写，没有重叠</li>
+</ol>
+</li>
+</ol>
+</li>
+</ol>
+</li>
+<li>写阶段——将临时变量写入数据库中</li>
+<li>特点<ol>
+<li>不会发生级联中止</li>
+<li>长事务会饿死</li>
+</ol>
+</li>
+</ol>
+</li>
+</ol>
+</li>
+<li>Partition-based Timestamp</li>
+</ol>
+</li>
+<li><p>MVCC</p>
+<ol>
+<li><p>以上的机制都相对悲观</p>
+</li>
+<li><p>具体设计</p>
+<ol>
+<li><p>并发控制</p>
+<ol>
+<li>写不阻塞读，读不阻塞写</li>
+<li>MVCC为每个W(X)创建一个新版本（类似于影子页），只写事务可以在不需要锁的前提下读数据库一致的快照（虚拟），很好的支持time-travel查询？</li>
+<li>例子<ol>
+<li><img src="/2021/10/25/%E4%BA%8B%E5%8A%A1(CMU%2015-445%20lec16-19)/image-20210815225414589.png" alt="image-20210815225414589"></li>
+</ol>
+</li>
+</ol>
+</li>
+<li><p>数据存储</p>
+<ol>
+<li>怎么快速找到这个版本？构造一个链表<ol>
+<li>append-only<ol>
+<li>每次都在表后增加一个版本，同一个数据项的新老版本连接起来（用单链表）</li>
+<li>表中存放整个数据行</li>
+<li>连接顺序<ol>
+<li>O2N从老到新，这样获取最新版本需要从头到尾遍历</li>
+<li>N2O从新到老，这样每次遍历的头结点都是变化的<ol>
+<li>优化——构造一个索引，指向各个数据项的最新版本</li>
+</ol>
+</li>
+</ol>
+</li>
+</ol>
+</li>
+<li>time-travel<ol>
+<li>跟N2O的优化类似，分成master版本和time travel版本，master版本储存最新的数据</li>
+<li>表中存放整个数据行</li>
+</ol>
+</li>
+<li>delta storage<ol>
+<li>存放的不是整个数据行</li>
+<li>存放的是增量值（类似于用于回滚的undo日志）</li>
+</ol>
+</li>
+</ol>
+</li>
+</ol>
+</li>
+<li><p>垃圾清理</p>
+<ol>
+<li>元组水平</li>
+<li>事务水平</li>
+</ol>
+</li>
+<li><p>索引管理</p>
+</li>
+</ol>
+</li>
+</ol>
+</li>
+</ol>
+</div></header><footer class="post__foot u-cf"><ul class="post__tag u-fl"><li class="post__tag__item"><a class="post__tag__link" href="/tags/%E6%95%B0%E6%8D%AE%E5%BA%93/">数据库</a></li></ul></footer></article></main><footer class="foot"><div class="foot-copy">&copy; 2016 - 2021 Bruce</div></footer>
+<script src="/js/scroller.js"></script>
+
+<script src="/js/main.js"></script>
+</body></html>
