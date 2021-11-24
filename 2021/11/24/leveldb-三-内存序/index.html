@@ -1,0 +1,88 @@
+<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8"><meta http-equiv="X-UA-Compatible" content="IE=edge"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="author" content="Bruce"><link rel="alternative" href="/atom.xml" title="布鲁斯的技术小屋" type="application/atom+xml"><link rel="icon" href="/favicon.png"><title>leveldb(三) 内存序 - 布鲁斯的技术小屋</title>
+<link rel="stylesheet" href="/css/main.css">
+
+<link rel="stylesheet" href="/js/fancybox/jquery.fancybox.min.css">
+<!--[if lt IE 9]><script>(function(a,b){a="abbr article aside audio bdi canvas data datalist details dialog figcaption figure footer header hgroup main mark meter nav output progress section summary template time video".split(" ");for(b=a.length-1;b>=0;b--)document.createElement(a[b])})()</script><![endif]-->
+<script src="/js/jquery-3.1.1.min.js"></script>
+
+<script src="/js/fancybox/jquery.fancybox.min.js"></script>
+<meta name="generator" content="Hexo 5.4.0"></head><body style="opacity:0"><header class="head"><h1 class="head-title u-fl"><a href="/">布鲁斯的技术小屋</a></h1><nav class="head-nav u-fr"><ul class="head-nav__list"><li class="head-nav__item"><a class="head-nav__link" href="/tags">标签</a></li><li class="head-nav__item"><a class="head-nav__link" href="/archives">目录</a></li></ul></nav></header><main class="main"><article class="post"><header class="post__head"><time class="post__time" datetime="2021-11-24T06:15:45.000Z">2021 - 11 - 24 14:15:45</time><h1 class="post__title"><a href="/2021/11/24/leveldb-%E4%B8%89-%E5%86%85%E5%AD%98%E5%BA%8F/">leveldb(三) 内存序</a></h1><div class="post__main echo"><p>在（二）中讲了skiplist，其实跳过了颇为重要的一部分</p>
+<p>为了保证skiplist的线程安全</p>
+<p>skiplist中对两个变量使用了原子变量</p>
+<figure class="highlight c++"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br></pre></td><td class="code"><pre><span class="line"><span class="built_in">std</span>::atomic&lt;<span class="keyword">int</span>&gt; max_height_; <span class="comment">// Node的最大高度</span></span><br><span class="line"><span class="built_in">std</span>::atomic&lt;Node*&gt; next_[<span class="number">1</span>]; <span class="comment">// Node中每层的next节点</span></span><br></pre></td></tr></table></figure>
+
+<p>涉及这两个变量的存取涉及到了三种内存序</p>
+<ol>
+<li>std::memory_order_release</li>
+<li>std::memory_order_relaxed</li>
+<li>std::memory_order_acquire</li>
+</ol>
+<p>下面讲一下内存序</p>
+<h2 id="内存序"><a href="#内存序" class="headerlink" title="内存序"></a>内存序</h2><h3 id="三级cache"><a href="#三级cache" class="headerlink" title="三级cache"></a>三级cache</h3><p><img src="/2021/11/24/leveldb-%E4%B8%89-%E5%86%85%E5%AD%98%E5%BA%8F/%E7%BC%93%E5%AD%98%E4%B8%80%E8%87%B4%E6%80%A7.jpg" alt="缓存一致性"></p>
+<p>正是这样的SMP架构（共享多处理器），cache存在本地(L1/L2)的和共享(L3)，因而存在一致性的问题<br>即core1读到数据A后，进行修改，没有及时写回共享cache(L3)，此时倘若core2读数据A，这时候读到的就是旧值，此时core1的写和core2的读就没有完成同步</p>
+<h3 id="内存屏障"><a href="#内存屏障" class="headerlink" title="内存屏障"></a>内存屏障</h3><h3 id="C-11中的内存序"><a href="#C-11中的内存序" class="headerlink" title="C++11中的内存序"></a>C++11中的内存序</h3><p>c++11中引入了六种内存序</p>
+<ol>
+<li>relaxed</li>
+<li>acquire</li>
+<li>release</li>
+<li>consume</li>
+<li>acq_rel</li>
+<li>seq_cst</li>
+</ol>
+<p>六种内存序实际上实现了三种内存模型</p>
+<ol>
+<li>relaxed（要求最低，性能最好）</li>
+<li>acquire release</li>
+<li>sequential consistent</li>
+</ol>
+<p>他们保证了个啥呢</p>
+<p>（以下感谢<a target="_blank" rel="noopener" href="https://www.zhihu.com/question/24301047/answer/85844428">如何理解 C++11 的六种 memory order？ - 知乎 (zhihu.com)</a>，同时参考了<a target="_blank" rel="noopener" href="https://en.cppreference.com/w/cpp/atomic/memory_order">std::memory_order - cppreference.com</a>）</p>
+<ol>
+<li>relaxed order<ol>
+<li>只保证了单个线程内的原子操作是顺序的</li>
+<li>线程间呢？你想咋搞就咋搞</li>
+</ol>
+</li>
+<li>release–acquire<ol>
+<li>类似于mutex的lock和unlock操作</li>
+<li>线程A原子性的存入X （release），线程B原子性的读X（acquire），（其实就是将新值从local cache中更新到了shared cache，而且读的线程也从shared cache中获取新值嘛）</li>
+<li>同时带来一个副作用——线程A中存入X之前的操作，在线程B执行读取X之后都能看见（因为线程A这时的local cache已经更新了，而且线程B的cache也从shared cache中更新）</li>
+</ol>
+</li>
+<li>release–consume<ol>
+<li>release–acquire这个副作用太强了，我想避免这个开销怎么办？</li>
+<li>release–consume中的副作用变成了依赖读和依赖写，就是线程A中，存入X之前的依赖X的写操作，在线程B中读取X后，依赖X的读操作都能看到</li>
+</ol>
+</li>
+<li>seq_cst</li>
+</ol>
+<p>下面结合LevelDB中的一个例子</p>
+<figure class="highlight c++"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br></pre></td><td class="code"><pre><span class="line"><span class="function">Node* <span class="title">Next</span><span class="params">(<span class="keyword">int</span> n)</span> </span>&#123;</span><br><span class="line">    assert(n &gt;= <span class="number">0</span>); <span class="comment">// 1</span></span><br><span class="line">      <span class="comment">// 使用acquire load保证访问的是初始化了的node</span></span><br><span class="line">    <span class="keyword">return</span> next_[n].load(<span class="built_in">std</span>::memory_order_acquire); <span class="comment">// 2</span></span><br><span class="line">  &#125;</span><br><span class="line"><span class="function"><span class="keyword">void</span> <span class="title">SetNext</span><span class="params">(<span class="keyword">int</span> n, Node* x)</span> </span>&#123;</span><br><span class="line">    assert(n &gt;= <span class="number">0</span>); <span class="comment">// 3</span></span><br><span class="line">      <span class="comment">// 使用release store保证使用这个函数</span></span><br><span class="line">    <span class="comment">// 来进行next的插入的都是已经初始化了的node</span></span><br><span class="line">    next_[n].store(x, <span class="built_in">std</span>::memory_order_release); <span class="comment">// 4</span></span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+
+<ul>
+<li><p>Next函数返回在高度n下的下一个node节点</p>
+</li>
+<li><p>SetNext函数设置在高度n下的下一个节点为x</p>
+</li>
+<li><p>这里通过release-acquire，保证了三个东西</p>
+<ul>
+<li>1的运行一定在2之前，即通过Next(n)读到的node一定是已经初始化了的</li>
+<li>3的运行一定在4之前，保证SetNext(n)设置的node一定是已经初始化了的</li>
+<li>同时在release的store之前的操作，在acquire的load之前都可见（就是上面说的synchronize with语义</li>
+</ul>
+</li>
+</ul>
+<p>同时，由于性能的优化，还实现了no barrier版本的</p>
+<figure class="highlight c++"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br></pre></td><td class="code"><pre><span class="line"><span class="function">Node* <span class="title">NoBarrier_Next</span><span class="params">(<span class="keyword">int</span> n)</span> </span>&#123;</span><br><span class="line">    assert(n &gt;= <span class="number">0</span>);</span><br><span class="line">    <span class="keyword">return</span> next_[n].load(<span class="built_in">std</span>::memory_order_relaxed);</span><br><span class="line">  &#125;</span><br><span class="line">  <span class="function"><span class="keyword">void</span> <span class="title">NoBarrier_SetNext</span><span class="params">(<span class="keyword">int</span> n, Node* x)</span> </span>&#123;</span><br><span class="line">    assert(n &gt;= <span class="number">0</span>);</span><br><span class="line">    next_[n].store(x, <span class="built_in">std</span>::memory_order_relaxed);</span><br><span class="line">  &#125;</span><br></pre></td></tr></table></figure>
+<p>而且实际上insert调用的就是无屏障版本的（显然是出于性能的考虑）</p>
+<figure class="highlight c++"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br><span class="line">21</span><br><span class="line">22</span><br><span class="line">23</span><br><span class="line">24</span><br><span class="line">25</span><br><span class="line">26</span><br><span class="line">27</span><br><span class="line">28</span><br><span class="line">29</span><br><span class="line">30</span><br><span class="line">31</span><br></pre></td><td class="code"><pre><span class="line"><span class="keyword">template</span> &lt;<span class="keyword">typename</span> Key, <span class="class"><span class="keyword">class</span> <span class="title">Comparator</span>&gt;</span></span><br><span class="line"><span class="keyword">void</span> SkipList&lt;Key, Comparator&gt;::Insert(<span class="keyword">const</span> Key&amp; key) &#123;</span><br><span class="line">  <span class="comment">// TODO(opt): We can use a barrier-free variant of FindGreaterOrEqual()</span></span><br><span class="line">  <span class="comment">// here since Insert() is externally synchronized.</span></span><br><span class="line">  Node* prev[kMaxHeight];</span><br><span class="line">  Node* x = FindGreaterOrEqual(key, prev);</span><br><span class="line"></span><br><span class="line">  <span class="comment">// Our data structure does not allow duplicate insertion</span></span><br><span class="line">  assert(x == <span class="literal">nullptr</span> || !Equal(key, x-&gt;key));</span><br><span class="line"></span><br><span class="line">  <span class="keyword">int</span> height = RandomHeight();</span><br><span class="line">  <span class="keyword">if</span> (height &gt; GetMaxHeight()) &#123;</span><br><span class="line">    <span class="keyword">for</span> (<span class="keyword">int</span> i = GetMaxHeight(); i &lt; height; i++) &#123;</span><br><span class="line">      prev[i] = head_;</span><br><span class="line">    &#125;</span><br><span class="line">    <span class="comment">// It is ok to mutate max_height_ without any synchronization</span></span><br><span class="line">    <span class="comment">// with concurrent readers.  A concurrent reader that observes</span></span><br><span class="line">    <span class="comment">// the new value of max_height_ will see either the old value of</span></span><br><span class="line">    <span class="comment">// new level pointers from head_ (nullptr), or a new value set in</span></span><br><span class="line">    <span class="comment">// the loop below.  In the former case the reader will</span></span><br><span class="line">    <span class="comment">// immediately drop to the next level since nullptr sorts after all</span></span><br><span class="line">    <span class="comment">// keys.  In the latter case the reader will use the new node.</span></span><br><span class="line">    max_height_.store(height, <span class="built_in">std</span>::memory_order_relaxed);</span><br><span class="line">  &#125;</span><br><span class="line">  </span><br><span class="line">  x = NewNode(key, height);</span><br><span class="line">  <span class="keyword">for</span> (<span class="keyword">int</span> i = <span class="number">0</span>; i &lt; height; i++) &#123;</span><br><span class="line">    x-&gt;NoBarrier_SetNext(i, prev[i]-&gt;NoBarrier_Next(i)); <span class="comment">// x-&gt;next = prev-&gt;next</span></span><br><span class="line">    prev[i]-&gt;SetNext(i, x); <span class="comment">// prev-&gt;next = x</span></span><br><span class="line">  &#125;</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+<p><img src="/2021/11/24/leveldb-%E4%B8%89-%E5%86%85%E5%AD%98%E5%BA%8F/insert.jpg" alt="insert"><br>其中作者也解释了为什么此处可以使用无屏障版本的（无需同步）<br>实际上insert可以分为两步</p>
+<ol>
+<li>将新节点的next设为当前的next</li>
+<li>将prev的next设为当前节点<br>倘若发生了1，还没同步，这时候其他并发的线程读到的next还是next，不影响下一步操作</li>
+</ol>
+</div></header><footer class="post__foot u-cf"><ul class="post__tag u-fl"><li class="post__tag__item"><a class="post__tag__link" href="/tags/leveldb/">leveldb</a></li></ul></footer></article></main><footer class="foot"><div class="foot-copy">&copy; 2016 - 2021 Bruce</div></footer>
+<script src="/js/scroller.js"></script>
+
+<script src="/js/main.js"></script>
+</body></html>
