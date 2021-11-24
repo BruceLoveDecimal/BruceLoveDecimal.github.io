@@ -1,0 +1,71 @@
+<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8"><meta http-equiv="X-UA-Compatible" content="IE=edge"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="author" content="Bruce"><link rel="alternative" href="/atom.xml" title="布鲁斯的技术小屋" type="application/atom+xml"><link rel="icon" href="/favicon.png"><title>leveldb(一) 初识 - 布鲁斯的技术小屋</title>
+<link rel="stylesheet" href="/css/main.css">
+
+<link rel="stylesheet" href="/js/fancybox/jquery.fancybox.min.css">
+<!--[if lt IE 9]><script>(function(a,b){a="abbr article aside audio bdi canvas data datalist details dialog figcaption figure footer header hgroup main mark meter nav output progress section summary template time video".split(" ");for(b=a.length-1;b>=0;b--)document.createElement(a[b])})()</script><![endif]-->
+<script src="/js/jquery-3.1.1.min.js"></script>
+
+<script src="/js/fancybox/jquery.fancybox.min.js"></script>
+<meta name="generator" content="Hexo 5.4.0"></head><body style="opacity:0"><header class="head"><h1 class="head-title u-fl"><a href="/">布鲁斯的技术小屋</a></h1><nav class="head-nav u-fr"><ul class="head-nav__list"><li class="head-nav__item"><a class="head-nav__link" href="/tags">标签</a></li><li class="head-nav__item"><a class="head-nav__link" href="/archives">目录</a></li></ul></nav></header><main class="main"><article class="post"><header class="post__head"><time class="post__time" datetime="2021-11-24T05:11:02.000Z">2021 - 11 - 24 13:11:02</time><h1 class="post__title"><a href="/2021/11/24/leveldb-%E4%B8%80-%E5%88%9D%E8%AF%86/">leveldb(一) 初识</a></h1><div class="post__main echo"><h1 id="LevelDB-一-初识"><a href="#LevelDB-一-初识" class="headerlink" title="LevelDB(一) 初识"></a>LevelDB(一) 初识</h1><p>LevelDB是一个基于Log Structured Merged Tree（LSM tree）的KV数据库。什么是LSM tree？跟其他kv数据库有什么区别？ </p>
+<p>下面从最简单的三个什么开始，为什么，为什么，怎么做？</p>
+<h2 id="为什么？"><a href="#为什么？" class="headerlink" title="为什么？"></a>为什么？</h2><p>磁盘的顺序写速度远快于随机写的速度（减少了磁盘寻道的时间）。</p>
+<p>而对于写多读少的场景，对于写的优化更为重要。</p>
+<p>想象目前需要update a = 1。写入a的值，需要找到存a的表存在哪个页中，再通过偏移找到a的位置，修改那个地址的值为1，这个过程随机写跑不掉。怎么优化呢？想到WAL中log的写法，不直接写入a，而是写入修改a这条命令。所以才有log-structured这个名字。</p>
+<p>当然了，优化了写，也放大了读。。。这是后话</p>
+<h2 id="做什么？"><a href="#做什么？" class="headerlink" title="做什么？"></a>做什么？</h2><p>LSM tree的基本结构如下</p>
+<ol>
+<li>Meltable<ol>
+<li>作为数据存入的第一个池子，所以里面放的一定是数据最新的更新版本</li>
+<li>按key值有序（方便用logn的时间进行二分查找）</li>
+<li>存在易失性内存中</li>
+</ol>
+</li>
+<li>Immutable meltable<ol>
+<li>放数据的第二个池子，但只接受memtable流出的数据（顾名思义，immutable）</li>
+<li>跟meltable类似，同样按key值有序</li>
+<li>同样存在易失性内存中</li>
+<li>为什么还要加一个immutable的memtable？<ol>
+<li>因为memtable需要flush到磁盘上，跟sstable进行合并，这时候对memtable的其他写操作会被阻塞，会很影响写性能</li>
+</ol>
+</li>
+</ol>
+</li>
+<li>在磁盘上持久化存储的各级sstable<ol>
+<li>存在非易失性存储中，数据得以持久化</li>
+<li>sstable大小固定，但各级sstable的数量依次递增</li>
+<li>同样按key值有序</li>
+</ol>
+</li>
+</ol>
+<p><img src="/2021/11/24/leveldb-%E4%B8%80-%E5%88%9D%E8%AF%86/leveldb.png" alt="leveldb"></p>
+<h2 id="怎么做？"><a href="#怎么做？" class="headerlink" title="怎么做？"></a>怎么做？</h2><ol>
+<li><p>数据写进去发生了什么？</p>
+<ol>
+<li>先写入memtable，memtable满了，再通过compaction的方式，与immutable memtable合并，形成新的immutable memtable，再如此类推，所以compaction的操作是需要在后台不断进行的（性能影响点之一）</li>
+</ol>
+</li>
+<li><p>需要读数据时，又发生了什么？</p>
+<ol>
+<li>先找sstable，如果有相同的看时间戳，取最晚的（因为是log-structured结构的数据，取过时的可能会翻车，从sstable找起同理），之后再找immutable stable，如此类推</li>
+<li>显然读性能放大了至少N倍，部分冷数据和不存在的数据要到最低一层的ss才能找到，所以引入了bloom filter的优化<ol>
+<li>可以把Bloom filter想象成一个巨大的位图，将每个数据都做与运算，假如数据哈希到的位置上，哈希表有1位为0，代表这个数据肯定不在，只能优化对于<strong>不存在的数据</strong>的查询</li>
+</ol>
+</li>
+</ol>
+</li>
+</ol>
+<h2 id="后续想看的模块"><a href="#后续想看的模块" class="headerlink" title="后续想看的模块"></a>后续想看的模块</h2><ol>
+<li>基本数据结构的实现<ol>
+<li>SSTable使用的数据结构<strong>跳表</strong>的实现</li>
+<li><strong>日志</strong>的实现</li>
+<li><strong>布隆过滤器</strong>bloom filter的实现</li>
+</ol>
+</li>
+<li>日志<strong>compaction</strong>的实现</li>
+<li>levelDB对外暴露的接口和封装</li>
+</ol>
+</div></header><footer class="post__foot u-cf"><ul class="post__tag u-fl"><li class="post__tag__item"><a class="post__tag__link" href="/tags/leveldb/">leveldb</a></li></ul></footer></article></main><footer class="foot"><div class="foot-copy">&copy; 2016 - 2021 Bruce</div></footer>
+<script src="/js/scroller.js"></script>
+
+<script src="/js/main.js"></script>
+</body></html>
