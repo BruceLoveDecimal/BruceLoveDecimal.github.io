@@ -1,0 +1,83 @@
+<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8"><meta http-equiv="X-UA-Compatible" content="IE=edge"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="author" content="Bruce"><link rel="alternative" href="/atom.xml" title="布鲁斯的技术小屋" type="application/atom+xml"><link rel="icon" href="/favicon.png"><title>leveldb(二) 跳表 - 布鲁斯的技术小屋</title>
+<link rel="stylesheet" href="/css/main.css">
+
+<link rel="stylesheet" href="/js/fancybox/jquery.fancybox.min.css">
+<!--[if lt IE 9]><script>(function(a,b){a="abbr article aside audio bdi canvas data datalist details dialog figcaption figure footer header hgroup main mark meter nav output progress section summary template time video".split(" ");for(b=a.length-1;b>=0;b--)document.createElement(a[b])})()</script><![endif]-->
+<script src="/js/jquery-3.1.1.min.js"></script>
+
+<script src="/js/fancybox/jquery.fancybox.min.js"></script>
+<meta name="generator" content="Hexo 5.4.0"></head><body style="opacity:0"><header class="head"><h1 class="head-title u-fl"><a href="/">布鲁斯的技术小屋</a></h1><nav class="head-nav u-fr"><ul class="head-nav__list"><li class="head-nav__item"><a class="head-nav__link" href="/tags">标签</a></li><li class="head-nav__item"><a class="head-nav__link" href="/archives">目录</a></li></ul></nav></header><main class="main"><article class="post"><header class="post__head"><time class="post__time" datetime="2021-11-24T05:18:19.000Z">2021 - 11 - 24 13:18:19</time><h1 class="post__title"><a href="/2021/11/24/leveldb-%E4%BA%8C-%E8%B7%B3%E8%A1%A8/">leveldb(二) 跳表</a></h1><div class="post__main echo"><h1 id="LevelDB-二-跳表"><a href="#LevelDB-二-跳表" class="headerlink" title="LevelDB(二) 跳表"></a>LevelDB(二) 跳表</h1><p>首先从其对外暴露的接口开始</p>
+<p>试想一下，跳表需要对外什么接口？增删查改</p>
+<p>而LevelDB中，只提供了增查，Insert和Contain两个接口，没有改很好理解，因为leveldb本身就没有改操作（为什么没有删除？话说leveldb怎么实现删除的还需要继续查资料）</p>
+<p>同时，skiplist只提供了构造函数，不提供拷贝构造和拷贝赋值函数</p>
+<figure class="highlight c++"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br></pre></td><td class="code"><pre><span class="line">SkipList(<span class="keyword">const</span> SkipList&amp;) = <span class="keyword">delete</span>;</span><br><span class="line"> SkipList&amp; <span class="keyword">operator</span>=(<span class="keyword">const</span> SkipList&amp;) = <span class="keyword">delete</span>;</span><br></pre></td></tr></table></figure>
+
+<p>在讨论这菜式具体怎么做之前，先看一下原材料</p>
+<p>首先跳表本质上也是一个链表，基本组成单元是节点</p>
+<h2 id="Node"><a href="#Node" class="headerlink" title="Node"></a>Node</h2><p>想一下Node需要包含什么</p>
+<ol>
+<li>key</li>
+<li>一个可变长的Node*数组</li>
+</ol>
+<p>提供什么接口？</p>
+<ol>
+<li>获取第n层的下一个next节点</li>
+<li>增加一层，其高度为n，且设置其后续节点为x</li>
+</ol>
+<p>LevelDB就是这样子设计的（省去了线程安全部分，这部分后面再细讲）</p>
+<figure class="highlight c++"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br></pre></td><td class="code"><pre><span class="line"><span class="class"><span class="keyword">struct</span> <span class="title">Node</span> &#123;</span></span><br><span class="line">  Node(<span class="keyword">const</span> Key&amp; k) : key(k) &#123;&#125;</span><br><span class="line">  Key <span class="keyword">const</span> key;</span><br><span class="line">  <span class="function">Node* <span class="title">next</span><span class="params">(<span class="keyword">int</span> n)</span></span>;</span><br><span class="line">  <span class="function"><span class="keyword">void</span> <span class="title">setNext</span><span class="params">(<span class="keyword">int</span> n, Node* x)</span></span>;</span><br><span class="line">  </span><br><span class="line">  <span class="keyword">private</span>:</span><br><span class="line">  Node* next_[<span class="number">1</span>];</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+
+
+
+<h2 id="迭代器"><a href="#迭代器" class="headerlink" title="迭代器"></a>迭代器</h2><p>这里作者为了方便遍历，写了个iterator，适合我这种初学者看看迭代器是怎么写的，感觉没什么技术细节，就不细讲了</p>
+<p>提供了以下接口</p>
+<figure class="highlight c++"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br></pre></td><td class="code"><pre><span class="line"><span class="class"><span class="keyword">class</span> <span class="title">SkipList</span> &#123;</span></span><br><span class="line">    <span class="keyword">private</span>:</span><br><span class="line">      <span class="keyword">const</span> Skiplist* list_;</span><br><span class="line">      Node* node_; <span class="comment">// 遍历指针，实现的时候用了多处的assert(node_ != nullptr),俗话说的防御性编程</span></span><br><span class="line">  <span class="keyword">public</span>:</span><br><span class="line">      Iterator(<span class="keyword">const</span> Skiplist* <span class="built_in">list</span>);</span><br><span class="line">      </span><br><span class="line">      <span class="function"><span class="keyword">bool</span> <span class="title">Valid</span><span class="params">()</span> <span class="keyword">const</span></span>;</span><br><span class="line">      <span class="function"><span class="keyword">const</span> Key&amp; <span class="title">key</span><span class="params">()</span> <span class="keyword">const</span></span>;</span><br><span class="line">      <span class="function"><span class="keyword">void</span> <span class="title">Next</span><span class="params">()</span></span>;</span><br><span class="line">      <span class="function"><span class="keyword">void</span> <span class="title">Prev</span><span class="params">()</span></span>;</span><br><span class="line">      <span class="function"><span class="keyword">void</span> <span class="title">Seek</span><span class="params">(<span class="keyword">const</span> keY&amp; key)</span></span>;</span><br><span class="line">      <span class="function"><span class="keyword">void</span> <span class="title">SeekToLast</span><span class="params">()</span></span>;</span><br><span class="line">      <span class="function"><span class="keyword">void</span> <span class="title">SeekToLast</span><span class="params">()</span></span>;</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+
+
+
+<h2 id="Insert"><a href="#Insert" class="headerlink" title="Insert"></a>Insert</h2><p>可以先想一下，插入需要完成什么步骤</p>
+<ol>
+<li>找到插入的位置，prev</li>
+<li>构造一个新的node</li>
+<li>通过随机函数看节点取多高</li>
+<li>将各层与prev和next相连</li>
+</ol>
+<figure class="highlight c++"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br><span class="line">21</span><br><span class="line">22</span><br><span class="line">23</span><br><span class="line">24</span><br></pre></td><td class="code"><pre><span class="line"><span class="keyword">template</span> &lt;<span class="keyword">typename</span> Key, <span class="class"><span class="keyword">class</span> <span class="title">Comparator</span>&gt;</span></span><br><span class="line"><span class="keyword">void</span> SkipList&lt;Key, Comparator&gt;::Insert(<span class="keyword">const</span> Key&amp; key) &#123;</span><br><span class="line">  <span class="comment">// TODO(opt): We can use a barrier-free variant of FindGreaterOrEqual()</span></span><br><span class="line">  <span class="comment">// here since Insert() is externally synchronized.</span></span><br><span class="line">  Node* prev[kMaxHeight];</span><br><span class="line">  Node* x = FindGreaterOrEqual(key, prev); <span class="comment">// 找插入的位置</span></span><br><span class="line"></span><br><span class="line">  <span class="comment">// Our data structure does not allow duplicate insertion</span></span><br><span class="line">  assert(x == <span class="literal">nullptr</span> || !Equal(key, x-&gt;key));</span><br><span class="line"></span><br><span class="line">  <span class="keyword">int</span> height = RandomHeight(); <span class="comment">// 决定新node的高度</span></span><br><span class="line">  <span class="keyword">if</span> (height &gt; GetMaxHeight()) &#123;</span><br><span class="line">    <span class="keyword">for</span> (<span class="keyword">int</span> i = GetMaxHeight(); i &lt; height; i++) &#123; <span class="comment">// 如果高度大于目前最高，就设置prev为头节点</span></span><br><span class="line">      prev[i] = head_; </span><br><span class="line">    &#125;</span><br><span class="line">    max_height_ = height; <span class="comment">// 此处有改动</span></span><br><span class="line">  &#125;</span><br><span class="line"></span><br><span class="line">  x = NewNode(key, height); <span class="comment">// 创建新的node</span></span><br><span class="line">  <span class="keyword">for</span> (<span class="keyword">int</span> i = <span class="number">0</span>; i &lt; height; i++) &#123;</span><br><span class="line">    x-&gt;NoBarrier_SetNext(i, prev[i]-&gt;NoBarrier_Next(i));</span><br><span class="line">    prev[i]-&gt;SetNext(i, x);</span><br><span class="line">  &#125;</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+
+
+
+<h3 id="Contain"><a href="#Contain" class="headerlink" title="Contain"></a>Contain</h3><p>还是一样，先想想查找需要什么步骤</p>
+<ol>
+<li><p>从头节点开始遍历</p>
+</li>
+<li><p>先在同一层找到满足key &lt;= value &amp;&amp; next-&gt;key &gt; value的node</p>
+<ol>
+<li><p>如果key == value，直接返回当前node</p>
+</li>
+<li><p>如果key &lt; value，则令</p>
+<figure class="highlight c++"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">p = p-&gt;next_[level - <span class="number">1</span>];</span><br></pre></td></tr></table></figure>
+
+<p>继续往下一层找</p>
+</li>
+</ol>
+</li>
+</ol>
+<p>实际代码实现就是差不多</p>
+<ol>
+<li>主要是通过FindGreaterOrEqual找到第一个大于或等于的node<ol>
+<li>从头节点的最高层出发</li>
+<li>在同一高度下找到一个node，next的值大于等于target值</li>
+<li>查看高度是否为0，若不是，往下直到level = 0时返回</li>
+</ol>
+</li>
+</ol>
+<figure class="highlight c++"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br><span class="line">21</span><br><span class="line">22</span><br><span class="line">23</span><br><span class="line">24</span><br></pre></td><td class="code"><pre><span class="line"><span class="keyword">template</span> &lt;<span class="keyword">typename</span> Key, <span class="class"><span class="keyword">class</span> <span class="title">Comparator</span>&gt;</span></span><br><span class="line"><span class="keyword">typename</span> SkipList&lt;Key, Comparator&gt;::Node*</span><br><span class="line">SkipList&lt;Key, Comparator&gt;::FindGreaterOrEqual(<span class="keyword">const</span> Key&amp; key,</span><br><span class="line">                                              Node** prev) <span class="keyword">const</span> &#123;</span><br><span class="line">  Node* x = head_; </span><br><span class="line">  <span class="keyword">int</span> level = GetMaxHeight() - <span class="number">1</span>;</span><br><span class="line">  <span class="keyword">while</span> (<span class="literal">true</span>) &#123;</span><br><span class="line">    Node* next = x-&gt;Next(level);</span><br><span class="line">    <span class="keyword">if</span> (KeyIsAfterNode(key, next)) &#123;</span><br><span class="line">      <span class="comment">// 如果key值比next大，就继续找</span></span><br><span class="line">      x = next;</span><br><span class="line">    &#125; <span class="keyword">else</span> &#123;</span><br><span class="line">      <span class="comment">// 保存prev指针，insert函数需要</span></span><br><span class="line">      <span class="keyword">if</span> (prev != <span class="literal">nullptr</span>) prev[level] = x;</span><br><span class="line">      <span class="comment">// 当值等于目标值，且处于最底层，就返回</span></span><br><span class="line">      <span class="keyword">if</span> (level == <span class="number">0</span>) &#123;</span><br><span class="line">        <span class="keyword">return</span> next;</span><br><span class="line">      &#125; <span class="keyword">else</span> &#123;</span><br><span class="line">        <span class="comment">// 继续往下一层找</span></span><br><span class="line">        level--;</span><br><span class="line">      &#125;</span><br><span class="line">    &#125;</span><br><span class="line">  &#125;</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+
+<figure class="highlight c++"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br></pre></td><td class="code"><pre><span class="line"><span class="keyword">template</span> &lt;<span class="keyword">typename</span> Key, <span class="class"><span class="keyword">class</span> <span class="title">Comparator</span>&gt;</span></span><br><span class="line"><span class="keyword">bool</span> SkipList&lt;Key, Comparator&gt;::Contains(<span class="keyword">const</span> Key&amp; key) <span class="keyword">const</span> &#123;</span><br><span class="line">  Node* x = FindGreaterOrEqual(key, <span class="literal">nullptr</span>); <span class="comment">// 找大于或等于的第一个node</span></span><br><span class="line">  <span class="keyword">if</span> (x != <span class="literal">nullptr</span> &amp;&amp; Equal(key, x-&gt;key)) &#123;</span><br><span class="line">    <span class="keyword">return</span> <span class="literal">true</span>;</span><br><span class="line">  &#125; <span class="keyword">else</span> &#123;</span><br><span class="line">    <span class="keyword">return</span> <span class="literal">false</span>;</span><br><span class="line">  &#125;</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+
+<p>最后，可以去刷到leetcode体验一下完整过程~<a target="_blank" rel="noopener" href="https://leetcode-cn.com/problems/design-skiplist/">https://leetcode-cn.com/problems/design-skiplist/</a></p>
+</div></header><footer class="post__foot u-cf"><ul class="post__tag u-fl"><li class="post__tag__item"><a class="post__tag__link" href="/tags/leveldb/">leveldb</a></li></ul></footer></article></main><footer class="foot"><div class="foot-copy">&copy; 2016 - 2021 Bruce</div></footer>
+<script src="/js/scroller.js"></script>
+
+<script src="/js/main.js"></script>
+</body></html>
