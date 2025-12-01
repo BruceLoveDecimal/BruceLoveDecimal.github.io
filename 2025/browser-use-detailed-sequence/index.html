@@ -1,0 +1,259 @@
+<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8"><meta http-equiv="X-UA-Compatible" content="IE=edge"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="author" content="Bruce"><link rel="alternative" href="/atom.xml" title="布鲁斯的技术小屋" type="application/atom+xml"><link rel="icon" href="/favicon.png"><title>browser-use 详细时序图与逐步讲解 - 布鲁斯的技术小屋</title>
+<link rel="stylesheet" href="/css/main.css">
+
+<link rel="stylesheet" href="/js/fancybox/jquery.fancybox.min.css">
+<!--[if lt IE 9]><script>(function(a,b){a="abbr article aside audio bdi canvas data datalist details dialog figcaption figure footer header hgroup main mark meter nav output progress section summary template time video".split(" ");for(b=a.length-1;b>=0;b--)document.createElement(a[b])})()</script><![endif]-->
+<script src="/js/jquery-3.1.1.min.js"></script>
+
+<script src="/js/fancybox/jquery.fancybox.min.js"></script>
+<meta name="generator" content="Hexo 5.4.0"></head><body style="opacity:0"><header class="head"><h1 class="head-title u-fl"><a href="/">布鲁斯的技术小屋</a></h1><nav class="head-nav u-fr"><ul class="head-nav__list"><li class="head-nav__item"><a class="head-nav__link" href="/tags">标签</a></li><li class="head-nav__item"><a class="head-nav__link" href="/archives">目录</a></li></ul></nav></header><main class="main"><article class="post"><header class="post__head"><time class="post__time" datetime="2025-12-01T07:24:18.000Z">2025 - 12 - 01 15:24:18</time><h1 class="post__title"><a href="/2025/browser-use-detailed-sequence/">browser-use 详细时序图与逐步讲解</a></h1><div class="post__main echo"><h1 id="browser-use-详细时序图与逐步讲解"><a href="#browser-use-详细时序图与逐步讲解" class="headerlink" title="browser-use 详细时序图与逐步讲解"></a>browser-use 详细时序图与逐步讲解</h1>
+<p>按“<strong>启动阶段 -&gt; 一轮 step -&gt; 单个 action -&gt; 收尾阶段</strong>”来拆解 <code>browser-use</code> 的详细时序。</p>
+<p>TLDR：</p>
+<p><code>Agent.run()</code> -&gt; <code>new Executor(...)</code> -&gt; 初始化 <code>BrowserContext / MessageManager / EventManager / PlannerAgent / NavigatorAgent / ValidatorAgent / ActionRegistry</code> -&gt; <code>Executor.execute()</code> 进入循环 -&gt; 每轮可能先 <code>planner.execute()</code> -&gt; 再 <code>navigator.execute()</code> -&gt; 若任务看起来完成，再 <code>validator.execute()</code> -&gt; 最后发出 task 结束事件并清理 browser context。</p>
+<p>关键代码入口：</p>
+<ul><li><code>service.ts</code></li><li><code>executor.ts</code></li><li><code>navigator.ts</code></li><li><code>planner.ts</code></li><li><code>validator.ts</code></li></ul>
+<h2 id="1-启动阶段"><a href="#1-启动阶段" class="headerlink" title="1. 启动阶段"></a>1. 启动阶段</h2>
+<p>时序图：</p>
+<pre><code class="language-mermaid">sequenceDiagram
+    participant U as User
+    participant A as Agent.run
+    participant E as Executor
+    participant BC as BrowserContext
+    participant MM as MessageManager
+    participant EM as EventManager
+    participant N as NavigatorAgent
+    participant P as PlannerAgent
+    participant V as ValidatorAgent
+
+    U-&gt;&gt;A: run(task)
+    A-&gt;&gt;BC: new BrowserContext(config)
+    A-&gt;&gt;E: new Executor(task, taskId, browserContext, llm, extraArgs)
+    E-&gt;&gt;MM: new MessageManager()
+    E-&gt;&gt;EM: new EventManager()
+    E-&gt;&gt;E: new AgentContext(...)
+    E-&gt;&gt;E: new NavigatorPrompt / PlannerPrompt / ValidatorPrompt
+    E-&gt;&gt;E: new ActionBuilder(context, extractorLLM)
+    E-&gt;&gt;N: new NavigatorAgent(actionRegistry,...)
+    E-&gt;&gt;P: new PlannerAgent(...)
+    E-&gt;&gt;V: new ValidatorAgent(...)
+    E-&gt;&gt;MM: initTaskMessages(systemMessage, task)
+    A-&gt;&gt;E: subscribeExecutionEvents(...)
+    A-&gt;&gt;E: execute()</code></pre>
+<p>逐步解释：</p>
+<ol><li><code>Agent.run(task)</code> 会先创建 <code>Executor</code>。</li><li><code>Executor</code> 构造函数里先创建：
+<ul><li><code>MessageManager</code></li><li><code>EventManager</code></li><li><code>AgentContext</code></li></ul>
+</li><li><code>AgentContext</code> 保存整个任务运行时状态：
+<ul><li><code>browserContext</code></li><li><code>messageManager</code></li><li><code>eventManager</code></li><li><code>options</code></li><li><code>paused/stopped</code></li><li><code>actionResults</code></li><li><code>nSteps</code></li></ul>
+</li><li><code>Executor</code> 接着创建三类 prompt：
+<ul><li><code>NavigatorPrompt</code></li><li><code>PlannerPrompt</code></li><li><code>ValidatorPrompt</code></li></ul>
+</li><li><code>ActionBuilder.buildDefaultActions()</code> 生成一组浏览器动作，并注册到 <code>NavigatorActionRegistry</code>。</li><li><code>Executor</code> 初始化三个 agent：
+<ul><li><code>NavigatorAgent</code></li><li><code>PlannerAgent</code></li><li><code>ValidatorAgent</code></li></ul>
+</li><li>最后调用 <code>messageManager.initTaskMessages(...)</code>，把初始上下文塞进记忆：
+<ul><li>system prompt</li><li>用户 ultimate task</li><li>一个示例 tool call</li><li><code>[Your task history memory starts here]</code></li></ul>
+</li></ol>
+<p>这一步相当于把“agent 的初始脑内记忆”建好。</p>
+<h2 id="2-executor-主循环"><a href="#2-executor-主循环" class="headerlink" title="2. Executor 主循环"></a>2. Executor 主循环</h2>
+<p>核心在 <code>executor.ts</code>。</p>
+<p>时序图：</p>
+<pre><code class="language-mermaid">sequenceDiagram
+    participant E as Executor.execute
+    participant C as AgentContext
+    participant BC as BrowserContext
+    participant P as PlannerAgent
+    participant N as NavigatorAgent
+    participant V as ValidatorAgent
+    participant EM as EventManager
+
+    E-&gt;&gt;BC: getState()
+    E-&gt;&gt;C: emitEvent(TASK_START, browserState)
+    loop step = 0..maxSteps
+        E-&gt;&gt;E: shouldStop()
+        alt 需要 planning
+            E-&gt;&gt;N: addStateMessageToMemory() (有时)
+            E-&gt;&gt;P: execute()
+            P--&gt;&gt;E: PlannerOutput
+            E-&gt;&gt;C.messageManager: addPlan(...)
+            E-&gt;&gt;V: setPlan(next_steps or null)
+        end
+        alt not done
+            E-&gt;&gt;N: execute()
+            N--&gt;&gt;E: {done?}
+        end
+        alt done &amp;&amp; validateOutput
+            E-&gt;&gt;V: execute()
+            V--&gt;&gt;E: {is_valid}
+        end
+    end
+    E-&gt;&gt;C: emitEvent(TASK_OK / TASK_FAIL / TASK_CANCEL / TASK_PAUSE)</code></pre>
+<p>逐步解释：</p>
+<ol><li><code>Executor.execute()</code> 开始先重置 <code>context.nSteps = 0</code>。</li><li>调 <code>browserContext.getState()</code> 获取当前浏览器状态，供 <code>TASK_START</code> 事件使用。</li><li><code>context.emitEvent(Actors.SYSTEM, TASK_START, ...)</code> -&gt; <code>EventManager.emit(event)</code> -&gt; 订阅方收到 execution event。</li><li>进入 <code>for (step = 0; step &lt; maxSteps; step++)</code>。</li><li>每轮先执行 <code>shouldStop()</code>：
+<ul><li>如果 <code>stopped</code>，直接终止</li><li>如果 <code>paused</code>，一直 sleep 轮询</li><li>如果连续失败超限，也终止</li></ul>
+</li><li>判断是否要跑 planner：
+<ul><li><code>nSteps % planningInterval === 0</code></li><li>或上一次 validator 失败</li></ul>
+</li><li>如果要 planner，可能先调用 <code>navigator.addStateMessageToMemory()</code>，把浏览器当前状态追加到 message history。</li><li>调 <code>planner.execute()</code> 得到：
+<ul><li><code>observation</code></li><li><code>done</code></li><li><code>next_steps</code></li><li><code>web_task</code></li></ul>
+</li><li><code>Executor</code> 把 plan 插入 <code>messageManager.addPlan(...)</code>。</li><li>如果 <code>planOutput.result.done === true</code>，说明 planner 认为任务已完成，先不导航，转给 validator 二次确认。</li><li>如果还没完成，就调用 <code>navigate()</code>，内部会转到 <code>navigator.execute()</code>。</li><li>如果 <code>navigator</code> 返回 done，并且配置开启 <code>validateOutput</code>，就调用 <code>validator.execute()</code>。</li><li>validator 如果判定不通过，会把失败原因写回 <code>context.actionResults</code>，下一轮 planner / navigator 都能看见。</li><li>循环结束后统一发 task 级结束事件。</li></ol>
+<h2 id="3-planner-的一轮调用"><a href="#3-planner-的一轮调用" class="headerlink" title="3. Planner 的一轮调用"></a>3. Planner 的一轮调用</h2>
+<p>核心在 <code>planner.ts</code>。</p>
+<p>时序图：</p>
+<pre><code class="language-mermaid">sequenceDiagram
+    participant E as Executor
+    participant P as PlannerAgent
+    participant MM as MessageManager
+    participant LLM as chatLLM
+    participant EM as EventManager
+
+    E-&gt;&gt;P: execute()
+    P-&gt;&gt;EM: emit(STEP_START, "Planning...")
+    P-&gt;&gt;MM: getMessages()
+    P-&gt;&gt;P: 构造 plannerMessages
+    P-&gt;&gt;LLM: invoke(plannerMessages)
+    LLM--&gt;&gt;P: structured JSON / raw JSON
+    P-&gt;&gt;EM: emit(STEP_OK, next_steps)
+    P--&gt;&gt;E: AgentOutput&lt;PlannerOutput&gt;</code></pre>
+<p>细节：</p>
+<ol><li><code>PlannerAgent.execute()</code> 发 <code>STEP_START</code> 事件。</li><li>从 <code>messageManager.getMessages()</code> 拿到完整历史。</li><li>构造 <code>plannerMessages = [plannerSystemMessage, ...messages.slice(1)]</code>，也就是忽略最早那条 navigator system message。</li><li>如果 <code>useVisionForPlanner = false</code> 且整体 <code>useVision = true</code>，会把最后一条 state message 里的图片删掉，只保留文本。</li><li>调用 <code>BaseAgent.invoke(...)</code>：
+<ul><li>支持 structured output 的模型，直接 <code>withStructuredOutput(...)</code></li><li>不支持的模型，则 <code>chatLLM.invoke(...)</code> 后手动抽 JSON、<code>jsonrepair</code>、再过 zod 校验</li></ul>
+</li><li>planner 返回高层计划，<code>Executor</code> 再决定下一步。</li></ol>
+<h2 id="4-navigator-的一轮调用"><a href="#4-navigator-的一轮调用" class="headerlink" title="4. Navigator 的一轮调用"></a>4. Navigator 的一轮调用</h2>
+<p>这是最关键的一轮，核心在 <code>navigator.ts</code>。</p>
+<p>时序图：</p>
+<pre><code class="language-mermaid">sequenceDiagram
+    participant E as Executor.navigate
+    participant N as NavigatorAgent
+    participant MM as MessageManager
+    participant BP as BasePrompt
+    participant BC as BrowserContext
+    participant Page as Page
+    participant DOM as DOMService
+    participant LLM as chatLLM
+
+    E-&gt;&gt;N: execute()
+    N-&gt;&gt;Event: emit(STEP_START, "Navigating...")
+    N-&gt;&gt;N: addStateMessageToMemory()
+    N-&gt;&gt;BP: getUserMessage(context)
+    BP-&gt;&gt;BC: getState()
+    BC-&gt;&gt;Page: getCurrentPage()
+    Page-&gt;&gt;Page: getState()
+    Page-&gt;&gt;DOM: getClickableElements(...)
+    Page-&gt;&gt;Page: takeScreenshot() (if vision)
+    BP--&gt;&gt;N: HumanMessage(stateDescription + optional image)
+    N-&gt;&gt;MM: addStateMessage(...)
+    N-&gt;&gt;MM: getMessages()
+    N-&gt;&gt;LLM: invoke(inputMessages)
+    LLM--&gt;&gt;N: {current_state, action[]}
+    N-&gt;&gt;MM: removeLastStateMessage()
+    N-&gt;&gt;MM: addModelOutputToMemory()
+    N-&gt;&gt;N: doMultiAction(action[])
+    N--&gt;&gt;E: {done}</code></pre>
+<p>逐步展开：</p>
+<ol><li><code>NavigatorAgent.execute()</code> 先发 <code>STEP_START</code>。</li><li>调 <code>addStateMessageToMemory()</code>，这里做两件事：
+<ul><li>先把上一轮 <code>actionResults</code> 中需要保留的内容写进 memory</li><li>再调用 prompt 生成新的当前页面 state message</li></ul>
+</li><li><code>prompt.getUserMessage(context)</code> 实际走的是 <code>buildBrowserStateUserMessage(context)</code>。</li><li>这个函数内部调用 <code>browserContext.getState()</code>。</li><li><code>BrowserContext.getState()</code> 会：
+<ul><li><code>getCurrentPage()</code></li><li><code>page.getState()</code></li><li>汇总当前页和所有 tab 信息</li></ul>
+</li><li><code>Page.getState()</code> 又会：
+<ul><li><code>waitForPageAndFramesLoad()</code></li><li><code>_updateState()</code></li></ul>
+</li><li><code>_updateState()</code> 里关键步骤：
+<ul><li><code>removeHighlight()</code></li><li><code>getClickableElements(...)</code></li><li><code>takeScreenshot()</code> 如果 <code>useVision</code></li><li><code>getScrollInfo()</code></li><li>更新 <code>_state.elementTree / selectorMap / screenshot / url / title</code></li></ul>
+</li><li><code>getClickableElements(...)</code> 调 DOM service：
+<ul><li>浏览器页内执行 <code>window.buildDomTree(...)</code></li><li><code>parseNode(...)</code> 变成 <code>DOMElementNode</code></li><li><code>createSelectorMap(...)</code> 建立 <code>index -&gt; element</code> 映射</li></ul>
+</li><li>prompt 再把这些状态拼成一条 HumanMessage：
+<ul><li>当前 URL / title</li><li>其他 tabs</li><li>当前可交互元素列表</li><li>像素上下文</li><li>step 进度</li><li>上一步 action result/error</li><li>如果开了 vision，还会附带 screenshot image</li></ul>
+</li><li><code>NavigatorAgent</code> 把这条 state message 加入 <code>MessageManager</code>。</li><li>然后 <code>messageManager.getMessages()</code> 拿到完整上下文，送给模型。</li><li><code>NavigatorAgent.invoke(...)</code> 会调用模型，期望得到：
+<ul><li><code>current_state</code></li><li><code>action: [...]</code></li></ul>
+</li><li>拿到模型输出后，先把刚刚的 state message 从 memory 移除。</li><li>再把模型输出用 <code>addModelOutputToMemory()</code> 转成：
+<ul><li>一条 AIMessage tool_call</li><li>一条 ToolMessage placeholder</li></ul>
+</li><li>最后进入 <code>doMultiAction(...)</code> 真正执行动作。</li></ol>
+<h2 id="5-单个-action-的调用链"><a href="#5-单个-action-的调用链" class="headerlink" title="5. 单个 action 的调用链"></a>5. 单个 action 的调用链</h2>
+<p>核心在 <code>builder.ts</code>。</p>
+<p>时序图，以 <code>click_element</code> 为例：</p>
+<pre><code class="language-mermaid">sequenceDiagram
+    participant N as NavigatorAgent
+    participant AR as ActionRegistry
+    participant A as Action.call
+    participant BC as BrowserContext
+    participant P as Page
+    participant E as EventManager
+
+    N-&gt;&gt;AR: getAction("click_element")
+    AR--&gt;&gt;N: Action
+    N-&gt;&gt;A: call(args)
+    A-&gt;&gt;A: zod schema 校验参数
+    A-&gt;&gt;E: emit(ACT_START, desc)
+    A-&gt;&gt;BC: getCurrentPage()
+    A-&gt;&gt;P: getState()
+    P--&gt;&gt;A: selectorMap
+    A-&gt;&gt;A: 根据 index 找 elementNode
+    A-&gt;&gt;P: clickElementNode(useVision, elementNode)
+    A-&gt;&gt;E: emit(ACT_OK, msg)
+    A--&gt;&gt;N: ActionResult</code></pre>
+<p><code>doMultiAction()</code> 的实际逻辑：</p>
+<ol><li>把 <code>response.action</code> 归一化成数组。</li><li>遍历每个 action object。</li><li>取出 <code>actionName = Object.keys(action)[0]</code>。</li><li><code>actionRegistry.getAction(actionName)?.call(actionArgs)</code>。</li><li><code>Action.call()</code> 先用 zod schema 校验参数。</li><li>然后进入具体 handler。</li></ol>
+<p>常见 handler：</p>
+<ul><li><code>done</code>
+<ul><li>直接发 <code>ACT_START/ACT_OK</code></li><li>返回 <code>ActionResult({ isDone: true, extractedContent: text })</code></li></ul>
+</li><li><code>go_to_url</code>
+<ul><li><code>browserContext.navigateTo(url)</code></li></ul>
+</li><li><code>search_google</code>
+<ul><li><code>page.navigateTo("https://www.google.com/search?q=...")</code></li></ul>
+</li><li><code>click_element</code>
+<ul><li><code>page.getState()</code></li><li><code>selectorMap.get(index)</code></li><li><code>page.clickElementNode(...)</code></li></ul>
+</li><li><code>input_text</code>
+<ul><li><code>page.getState()</code></li><li>找 element</li><li><code>page.inputTextElementNode(...)</code></li></ul>
+</li><li><code>switch_tab</code>
+<ul><li><code>browserContext.switchTab(tab_id)</code></li></ul>
+</li><li><code>open_tab</code>
+<ul><li><code>browserContext.openTab(url)</code></li></ul>
+</li><li><code>scroll_down</code>
+<ul><li><code>page.scrollDown(...)</code></li></ul>
+</li><li><code>send_keys</code>
+<ul><li><code>page.sendKeys(...)</code></li></ul>
+</li></ul>
+<p>每个 action 执行完，<code>NavigatorAgent</code> 会额外 sleep 1 秒，避免页面变化还没稳定。</p>
+<h2 id="6-validator-的一轮调用"><a href="#6-validator-的一轮调用" class="headerlink" title="6. Validator 的一轮调用"></a>6. Validator 的一轮调用</h2>
+<p>核心在 <code>validator.ts</code>。</p>
+<p>时序图：</p>
+<pre><code class="language-mermaid">sequenceDiagram
+    participant E as Executor
+    participant V as ValidatorAgent
+    participant BP as ValidatorPrompt
+    participant BC as BrowserContext
+    participant LLM as chatLLM
+    participant C as AgentContext
+
+    E-&gt;&gt;V: execute()
+    V-&gt;&gt;C: emit(STEP_START, "Validating...")
+    V-&gt;&gt;BP: getUserMessage(context)
+    BP-&gt;&gt;BC: getState()
+    BP--&gt;&gt;V: stateMessage
+    V-&gt;&gt;LLM: invoke([systemMessage, stateMessage(+plan)])
+    LLM--&gt;&gt;V: {is_valid, reason, answer}
+    alt is_valid = false
+        V-&gt;&gt;C: actionResults = [ActionResult(includeInMemory=true,...)]
+        V-&gt;&gt;C: emit(STEP_FAIL, reason)
+    else is_valid = true
+        V-&gt;&gt;C: emit(STEP_OK, answer)
+    end
+    V--&gt;&gt;E: result</code></pre>
+<p>关键点：</p>
+<ol><li>validator 不吃完整历史，只吃：
+<ul><li>自己的 <code>systemMessage</code></li><li>当前 state message</li><li>可选的 <code>plan</code></li></ul>
+</li><li>如果校验失败，会把失败原因塞进 <code>context.actionResults</code>：
+<ul><li><code>includeInMemory: true</code></li></ul>
+</li><li>下一轮 navigator 在 <code>addStateMessageToMemory()</code> 时会把这个失败原因写回上下文，帮助模型修正。</li></ol>
+<p>这一步很关键，因为它构成了一个简单但有效的“反思闭环”。</p>
+<h2 id="7-结束与清理"><a href="#7-结束与清理" class="headerlink" title="7. 结束与清理"></a>7. 结束与清理</h2>
+<p>完整退出路径：</p>
+<ol><li><code>Executor.execute()</code> 根据结果发：
+<ul><li><code>TASK_OK</code></li><li><code>TASK_FAIL</code></li><li><code>TASK_CANCEL</code></li><li><code>TASK_PAUSE</code></li></ul>
+</li><li><code>service.ts</code> 里订阅 execution event。</li><li>如果收到 task 级结束事件，会调用 <code>executor.cleanup()</code>。</li><li><code>cleanup()</code> -&gt; <code>browserContext.cleanup()</code>。</li><li><code>browserContext.cleanup()</code> 会：
+<ul><li>当前页移除高亮</li><li>遍历所有 attached pages 执行 <code>detachPuppeteer()</code></li><li>清空 <code>_attachedPages</code></li><li>清空 <code>_currentTabId</code></li></ul>
+</li></ol>
+<h2 id="8-你可以把它理解成的最小闭环"><a href="#8-你可以把它理解成的最小闭环" class="headerlink" title="8. 你可以把它理解成的最小闭环"></a>8. 你可以把它理解成的最小闭环</h2>
+<p>一句话版：</p>
+<ul><li><code>Executor</code> 负责大循环和阶段调度</li><li><code>Planner</code> 负责“想下一步大方向”</li><li><code>Navigator</code> 负责“看页面并产出操作序列”</li><li><code>ActionBuilder</code> 负责“把操作序列变成真实浏览器动作”</li><li><code>Validator</code> 负责“确认任务是不是真的完成”</li><li><code>MessageManager</code> 负责“把历史、状态、动作结果拼成 LLM 上下文”</li><li><code>BrowserContext/Page/DOMService</code> 负责“把真实网页压缩成 agent 可消费的状态描述”</li></ul>
+</div></header><footer class="post__foot u-cf"><ul class="post__tag u-fl"><li class="post__tag__item"><a class="post__tag__link" href="/tags/Agent/">Agent</a></li></ul></footer></article></main><footer class="foot"><div class="foot-copy">&copy; 2016 - 2021 Bruce</div></footer>
+<script src="/js/scroller.js"></script>
+
+<script src="/js/main.js"></script>
+</body></html>
