@@ -1,0 +1,83 @@
+<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8"><meta http-equiv="X-UA-Compatible" content="IE=edge"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="author" content="Bruce"><link rel="alternative" href="/atom.xml" title="布鲁斯的技术小屋" type="application/atom+xml"><link rel="icon" href="/favicon.png"><title>WiscKey 论文精读 - 布鲁斯的技术小屋</title>
+<link rel="stylesheet" href="/css/main.css">
+
+<link rel="stylesheet" href="/js/fancybox/jquery.fancybox.min.css">
+<!--[if lt IE 9]><script>(function(a,b){a="abbr article aside audio bdi canvas data datalist details dialog figcaption figure footer header hgroup main mark meter nav output progress section summary template time video".split(" ");for(b=a.length-1;b>=0;b--)document.createElement(a[b])})()</script><![endif]-->
+<script src="/js/jquery-3.1.1.min.js"></script>
+
+<script src="/js/fancybox/jquery.fancybox.min.js"></script>
+<meta name="generator" content="Hexo 5.4.0"></head><body style="opacity:0"><header class="head"><h1 class="head-title u-fl"><a href="/">布鲁斯的技术小屋</a></h1><nav class="head-nav u-fr"><ul class="head-nav__list"><li class="head-nav__item"><a class="head-nav__link" href="/tags">标签</a></li><li class="head-nav__item"><a class="head-nav__link" href="/archives">目录</a></li></ul></nav></header><main class="main"><article class="post"><header class="post__head"><time class="post__time" datetime="2025-11-10T03:25:00.000Z">2025 - 11 - 10 11:25:00</time><h1 class="post__title"><a href="/2025/wisckey-%E8%AE%BA%E6%96%87%E7%B2%BE%E8%AF%BB/">WiscKey 论文精读</a></h1><div class="post__main echo"><h1 id="WiscKey-论文精读"><a href="#WiscKey-论文精读" class="headerlink" title="WiscKey 论文精读"></a>WiscKey 论文精读</h1>
+<ol>
+<li>经典的 LSM 实现: LevelDB</li>
+<li>机遇与挑战</li>
+<li>KV 分离对 SSD 的优化</li>
+<li>KV 分离带来的挑战</li>
+<li>实现细节</li>
+<li>优化与改进</li>
+</ol>
+<h2 id="经典的-LSM-实现-LevelDB"><a href="#经典的-LSM-实现-LevelDB" class="headerlink" title="经典的 LSM 实现: LevelDB"></a>经典的 LSM 实现: LevelDB</h2><p>适合磁盘的索引结构通常有两种: 一种是就地更新的 B+Tree, 一种是非就地更新的 LSM。前者读性能更好, 但随机写开销大; 后者充分利用顺序写入的高性能特性, 因而成为写入密集型系统的重要基础。</p>
+<p>顺序写入的时间复杂度可以做到 O(1), 但更新同一个 key 会占用多份存储空间。如果只是不断追加到一个无限大的文件, 读取某个从未更新过的 key 时, 最坏情况下需要从尾扫到头, 复杂度退化到 O(n), 范围查询甚至需要 O(NLogN) 的磁盘排序代价。</p>
+<p>为了解决这个问题, 最直接的优化是定期合并文件, 清理被覆盖的旧 key, 只保留最新版本。但压缩过程中不能一边写一边改同一文件, 因此需要把数据分段组织。每次合并本质上是归并排序: 找出键区间重叠的分段文件, 按 min_key 和 max_key 归并生成新文件。</p>
+<p>为了进一步降低读取复杂度, LSM 会把最新的键值对先放在内存结构里, 例如红黑树或跳表。内存表达到阈值后转为不可变内存表, 在后台刷盘形成新的分段文件。通常系统会同时维护一个活跃内存表和一个不可变内存表, 这样刷盘时前台写入不需要停下来。</p>
+<p>LSM 真正关键的设计是分层。所有磁盘文件被组织成 c0 到 ck 共 k+1 层。c0 直接来自内存表刷盘, 文件之间可能有重叠; c1 到 ck 则是经过归并压缩后的结果, 同层内的 key 范围通常不再重叠。这样读取时, 最坏情况下只需检查 c0 的全部文件, 再加上 c1 到 ck 每层一个文件, 也就是 c0+k 个文件, 就能定位 key。</p>
+<p>在工程实现上, 高层文件通常更大, 难以整体读入内存, 所以需要为每个数据文件设计索引布局。一个 SSTable 一般包含元数据块、索引块和数据块。元数据里常放布隆过滤器以快速判断 key 是否可能存在, 再通过排序索引定位对应数据块位置。</p>
+<p>为了记录每个 SSTable 的层级、文件名和 key 范围, 系统还需要维护一个清单文件。在 LevelDB 中, 这个角色就是 MANIFEST。与此同时, 作为一个数据库引擎, 还必须借助 WAL 保证崩溃恢复: 只有写入 WAL 成功后, 才能向客户端确认写成功。数据库重启时重放 WAL, 就能恢复尚未来得及落盘的数据。</p>
+<p>综合来看, LSM Tree 并不是一棵具体的树, 更像是一整套围绕顺序写、后台压缩、分层组织和故障恢复构建出来的系统设计思想, LevelDB 则是它的经典工程实现之一。</p>
+<h2 id="机遇与挑战"><a href="#机遇与挑战" class="headerlink" title="机遇与挑战"></a>机遇与挑战</h2><p>LSM 通过牺牲部分读取性能和空间利用率来换取高吞吐的顺序写入能力。因此, 围绕 LSM 的优化目标通常集中在两个方向: 提升读取性能, 以及降低空间和写入放大带来的额外成本。</p>
+<h2 id="KV-分离对-SSD-的优化"><a href="#KV-分离对-SSD-的优化" class="headerlink" title="KV 分离对 SSD 的优化"></a>KV 分离对 SSD 的优化</h2><p>在 SSD 上使用传统 LSM 会遇到两个突出问题。第一, 写放大会缩短 SSD 的使用寿命。第二, 把 key 和 value 一起放在 SSTable 中, 并不能充分利用 SSD 擅长并行随机读写的特性。</p>
+<p>和机械硬盘相比, SSD 的随机读和顺序读差距没有那么夸张, 因而许多为了减少磁头寻道而设计的“强顺序化”优化, 在 SSD 时代并不总是划算。WiscKey 的核心思路是把 key 和 value 分离存储: key 仍然放在 LSM Tree 中, value 则只追加写入 vLog。</p>
+<p>这样做有两个显著收益。第一, compaction 过程中不再需要频繁搬动大 value, 因此写放大明显降低。第二, LSM 中只保留固定大小的 key 和地址信息, 树本身更小, 内存中可以缓存更多索引项, 间接降低读放大。</p>
+<p>对于随机读请求, SSD 的表现远好于机械硬盘。而对范围查询, 由于真正的 value 分散存储在 vLog 中, 读取路径会变成“顺序扫描 key, 随机回表取 value”, 性能天然会受影响。WiscKey 的应对方式是根据迭代器的 <code>next</code> 或 <code>prev</code> 模式, 预先从 LSM 中取出一批有序 key, 然后异步并行去 SSD 里拉取对应 value, 尽量发挥 SSD 的并行随机读能力。</p>
+<h2 id="KV-分离带来的挑战"><a href="#KV-分离带来的挑战" class="headerlink" title="KV 分离带来的挑战"></a>KV 分离带来的挑战</h2><p>把 value 从 LSM 中拆出去之后, 系统也会引入新的复杂性。vLog 会不断追加变大, 需要垃圾回收; value 被重写到新位置后, LSM 中保存的地址信息也必须同步更新; 此外还要重新回答数据如何布局、vLog 如何切分、崩溃恢复如何保证一致性等问题。</p>
+<h2 id="实现细节"><a href="#实现细节" class="headerlink" title="实现细节"></a>实现细节</h2><h3 id="数据布局"><a href="#数据布局" class="headerlink" title="数据布局"></a>数据布局</h3><p>WiscKey 的 KV 分离布局可以概括为:</p>
+<ol>
+<li>SSTable 中保存 <code>&lt;key, addr(vlogName, offset, size)&gt;</code></li>
+<li>vLog 中保存 <code>&lt;keySize, valueSize, key, value&gt;</code></li>
+</ol>
+<h3 id="随机查询"><a href="#随机查询" class="headerlink" title="随机查询"></a>随机查询</h3><ol>
+<li>先访问内存表或 LSM 索引定位 key, 拿到 value 地址信息。</li>
+<li>如果 value 已在缓存中则直接返回, 否则根据 vlog 名称找到对应文件。</li>
+<li>结合 offset 和 size 定位字节范围并读取 value。</li>
+<li>按策略把相关 block 或整段 vlog 内容缓存起来, 提升后续访问命中率。</li>
+</ol>
+<h3 id="范围查询"><a href="#范围查询" class="headerlink" title="范围查询"></a>范围查询</h3><ol>
+<li>根据迭代器是 <code>next</code> 还是 <code>prev</code>, 判断需要预读游标前方还是后方的 key。</li>
+<li>预先读取一批 key, 交给底层线程池异步地从 SSD 获取 value。</li>
+<li>异步结果缓存在内存里, 等到迭代器真正访问时再返回。</li>
+</ol>
+<h3 id="随机-顺序写入"><a href="#随机-顺序写入" class="headerlink" title="随机 / 顺序写入"></a>随机 / 顺序写入</h3><ol>
+<li>先把 set 操作写入 vlog。这里的 vlog 既承担 value log 的职责, 也承担预写日志的职责。</li>
+<li>写 vlog 成功后, 把返回的地址信息写入 LSM。</li>
+<li>随后向上层返回写入成功。</li>
+</ol>
+<h3 id="合并压缩"><a href="#合并压缩" class="headerlink" title="合并压缩"></a>合并压缩</h3><ol>
+<li>vlog 由多个文件组成, 其中一个活跃文件位于 head 端, 专门负责追加写入。</li>
+<li>最早写入的数据位于尾部, 可以视为 tail 端。</li>
+<li>多个前台写线程持续在 head 端追加日志。</li>
+<li>只有一个后台线程从 tail 端开始做垃圾回收。</li>
+<li>GC 每次挑选一个 vlog 文件, 去 LSM 中随机检查其中的 key 是否仍然有效; 有效数据会被重新追加写到新的 head 位置。</li>
+<li>随后更新这些 key 在 LSM 中记录的新地址。</li>
+<li>待新数据持久化完成后, 再释放旧的 vlog 文件。</li>
+<li>为了防止中途崩溃导致丢数据, 正确顺序必须是: 先写新 vlog 并落盘, 再异步更新索引, 最后删除旧文件。</li>
+</ol>
+<h3 id="故障恢复"><a href="#故障恢复" class="headerlink" title="故障恢复"></a>故障恢复</h3><ol>
+<li>在 WiscKey 的设计里, 预写日志和 value log 是同一套结构。</li>
+<li>引擎只需要周期性持久化 head 和 tail 的位置。</li>
+<li>数据库恢复时, 从崩溃前保存的地址开始, 按 tail 到 head 的顺序重放日志即可。</li>
+<li>查询时还需要做一致性检查:
+<ol>
+<li>如果 key 对应的位置不在当前 tail 和 head 覆盖的有效范围内, 直接忽略。</li>
+<li>如果当前位置上的 key 和索引里查到的 key 不一致, 同样忽略。</li>
+</ol>
+</li>
+</ol>
+<h2 id="优化与改进"><a href="#优化与改进" class="headerlink" title="优化与改进"></a>优化与改进</h2><h3 id="写缓冲区"><a href="#写缓冲区" class="headerlink" title="写缓冲区"></a>写缓冲区</h3><p>为了减少系统调用次数, 多个小 key 的写入可以先在内存中聚合, 再批量刷入 LSM 的 SSTable, 但仍会优先写入 vlog 以保证 WAL 语义。</p>
+<h3 id="空间放大率"><a href="#空间放大率" class="headerlink" title="空间放大率"></a>空间放大率</h3><p>空间放大率衡量的是“物理占用空间 / 逻辑数据大小”的比值。对于成本更高的 SSD 来说, 降低空间放大率可以直接带来更好的存储成本控制。</p>
+<h3 id="在线垃圾收集"><a href="#在线垃圾收集" class="headerlink" title="在线垃圾收集"></a>在线垃圾收集</h3><p>GC 会造成性能尖刺, 因此更合理的策略是并发、在线、分批次地推进回收, 尽量减少对前台读写请求的影响。</p>
+<h3 id="小-Value-的存储"><a href="#小-Value-的存储" class="headerlink" title="小 Value 的存储"></a>小 Value 的存储</h3><p>论文实验表明, 只有当 value 大于 4KB 时, KV 分离带来的收益才会非常明显。因此可以设置阈值: 当 value 超过该阈值时再走 KV 分离, 否则继续沿用传统 LSM Tree 模式。</p>
+</ol>
+</div></header><footer class="post__foot u-cf"><ul class="post__tag u-fl"><li class="post__tag__item"><a class="post__tag__link" href="/tags/%E6%95%B0%E6%8D%AE%E5%BA%93/">数据库</a></li></ul></footer></article></main><footer class="foot"><div class="foot-copy">&copy; 2016 - 2021 Bruce</div></footer>
+<script src="/js/scroller.js"></script>
+
+<script src="/js/main.js"></script>
+</body></html>
