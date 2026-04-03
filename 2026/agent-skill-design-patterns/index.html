@@ -1,0 +1,207 @@
+<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8"><meta http-equiv="X-UA-Compatible" content="IE=edge"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="author" content="Bruce"><link rel="alternative" href="/atom.xml" title="布鲁斯的技术小屋" type="application/atom+xml"><link rel="icon" href="/favicon.png"><title>每位 ADK 开发者都应知道的 5 种 Agent Skill 设计模式 - 布鲁斯的技术小屋</title>
+<link rel="stylesheet" href="/css/main.css">
+
+<link rel="stylesheet" href="/js/fancybox/jquery.fancybox.min.css">
+<!--[if lt IE 9]><script>(function(a,b){a="abbr article aside audio bdi canvas data datalist details dialog figcaption figure footer header hgroup main mark meter nav output progress section summary template time video".split(" ");for(b=a.length-1;b>=0;b--)document.createElement(a[b])})()</script><![endif]-->
+<script src="/js/jquery-3.1.1.min.js"></script>
+
+<script src="/js/fancybox/jquery.fancybox.min.js"></script>
+<meta name="generator" content="Hexo 5.4.0"></head><body style="opacity:0"><header class="head"><h1 class="head-title u-fl"><a href="/">布鲁斯的技术小屋</a></h1><nav class="head-nav u-fr"><ul class="head-nav__list"><li class="head-nav__item"><a class="head-nav__link" href="/tags">标签</a></li><li class="head-nav__item"><a class="head-nav__link" href="/archives">目录</a></li></ul></nav></header><main class="main"><article class="post"><header class="post__head"><time class="post__time" datetime="2026-03-28T19:38:20.000Z">2026 - 03 - 29 03:38:20</time><h1 class="post__title"><a href="/2026/agent-skill-design-patterns/">每位 ADK 开发者都应知道的 5 种 Agent Skill 设计模式</a></h1><div class="post__main echo"><h1 id="每位-ADK-开发者都应知道的-5-种-Agent-Skill-设计模式"><a href="#每位-ADK-开发者都应知道的-5-种-Agent-Skill-设计模式" class="headerlink" title="每位 ADK 开发者都应知道的 5 种 Agent Skill 设计模式"></a>每位 ADK 开发者都应知道的 5 种 Agent Skill 设计模式</h1>
+<p>说到 <code>SKILL.md</code>，开发者往往执着于格式: 写好 YAML、组织目录结构、遵循规范。但随着超过 30 种 Agent 工具都在标准化同一套布局格式，格式问题实际上已经不复存在。</p>
+<p>现在的挑战在于<strong>内容设计</strong>。规范说明了如何打包一个 Skill，但对于如何组织内部逻辑则几乎没有指导。例如，一个封装 FastAPI 规范的 Skill 和一个四步文档流水线的工作方式完全不同，尽管它们的 <code>SKILL.md</code> 文件从外部看起来毫无差异。</p>
+<p>通过研究整个生态中 Skill 的构建方式，我们发现了五种反复出现的设计模式，可以帮助开发者构建更好的 Agent。</p>
+<blockquote>
+<p>作者: @Saboo_Shubham_ 和 @lavinigam</p>
+</blockquote>
+<p>本文将逐一介绍每种模式，并附带可运行的 ADK 代码:</p>
+<ul>
+<li><strong>Tool Wrapper（工具封装器）</strong>: 让你的 Agent 即时精通任何库</li>
+<li><strong>Generator（生成器）</strong>: 基于可复用模板生成结构化文档</li>
+<li><strong>Reviewer（审查器）</strong>: 按严重程度对代码进行清单式评分</li>
+<li><strong>Inversion（反转模式）</strong>: Agent 先采访你再行动</li>
+<li><strong>Pipeline（流水线）</strong>: 强制执行带检查点的严格多步工作流</li>
+</ul>
+<hr>
+<h2 id="模式-1：Tool-Wrapper（工具封装器）"><a href="#模式-1：Tool-Wrapper（工具封装器）" class="headerlink" title="模式 1：Tool Wrapper（工具封装器）"></a>模式 1：Tool Wrapper（工具封装器）</h2>
+<p>Tool Wrapper 为你的 Agent 提供针对特定库的按需上下文。不同于将 API 规范硬编码到系统提示词中，你把它们打包成一个 Skill。你的 Agent 只在实际使用该技术时才加载这些上下文。</p>
+<p>这是最简单的实现模式。<code>SKILL.md</code> 文件监听用户提示中的特定库关键词，从 <code>references/</code> 目录动态加载你的内部文档，并将这些规则作为绝对真理应用。</p>
+<p>下面是一个教 Agent 编写 FastAPI 代码的 Tool Wrapper 示例:</p>
+<pre><code class="language-markdown"># skills/api-expert/SKILL.md
+---
+name: api-expert
+description: FastAPI 开发最佳实践和规范。用于构建、审查或调试 FastAPI 应用、REST API 或 Pydantic 模型时使用。
+metadata:
+  pattern: tool-wrapper
+  domain: fastapi
+---
+
+你是 FastAPI 开发专家。将以下规范应用于用户的代码或问题。
+
+## 核心规范
+
+加载 &#39;references/conventions.md&#39; 获取完整的 FastAPI 最佳实践列表。
+
+## 审查代码时
+1. 加载规范参考
+2. 逐条检查用户代码是否符合每项规范
+3. 对每个违规项，引用具体规则并建议修复方案
+
+## 编写代码时
+1. 加载规范参考
+2. 严格遵循每条规范
+3. 为所有函数签名添加类型注解
+4. 使用 Annotated 风格进行依赖注入
+</code></pre>
+<hr>
+<h2 id="模式-2：Generator（生成器）"><a href="#模式-2：Generator（生成器）" class="headerlink" title="模式 2：Generator（生成器）"></a>模式 2：Generator（生成器）</h2>
+<p>Tool Wrapper 是用来应用知识的，而 Generator 则是用来强制输出一致性的。如果你苦恼于 Agent 每次运行时生成不同的文档结构，Generator 通过编排一个“填空”流程来解决这个问题。</p>
+<p>它利用两个可选目录: <code>assets/</code> 存放输出模板，<code>references/</code> 存放风格指南。指令充当项目经理的角色，告诉 Agent 加载模板、阅读风格指南、向用户询问缺失的变量，然后填充文档。</p>
+<p>下面这个技术报告生成器 Skill 展示了这种思路:</p>
+<pre><code class="language-markdown"># skills/report-generator/SKILL.md
+---
+name: report-generator
+description: 生成结构化的 Markdown 格式技术报告。当用户要求撰写、创建或起草报告、摘要或分析文档时使用。
+metadata:
+  pattern: generator
+  output-format: markdown
+---
+
+你是一个技术报告生成器。严格按照以下步骤执行：
+
+第 1 步：加载 &#39;references/style-guide.md&#39; 获取语气和格式规则。
+
+第 2 步：加载 &#39;assets/report-template.md&#39; 获取所需的输出结构。
+
+第 3 步：向用户询问填充模板所需的任何缺失信息：
+- 主题或对象
+- 关键发现或数据点
+- 目标受众（技术人员、管理层、普通读者）
+
+第 4 步：按照风格指南的规则填充模板。模板中的每个部分都必须出现在输出中。
+
+第 5 步：以单个 Markdown 文档的形式返回完成的报告。
+</code></pre>
+<hr>
+<h2 id="模式-3：Reviewer（审查器）"><a href="#模式-3：Reviewer（审查器）" class="headerlink" title="模式 3：Reviewer（审查器）"></a>模式 3：Reviewer（审查器）</h2>
+<p>Reviewer 模式将<strong>检查什么</strong>和<strong>如何检查</strong>分离开来。不再编写冗长的系统提示词列出每种代码异味，而是将模块化的评分标准存储在 <code>references/review-checklist.md</code> 文件中。</p>
+<p>当用户提交代码时，Agent 加载此检查清单并系统地评分，按严重程度对发现的问题进行分组。如果你将 Python 风格检查清单替换为 OWASP 安全检查清单，使用完全相同的 Skill 基础设施就能得到一个完全不同的、专业化的审计。</p>
+<p>以下代码审查器 Skill 展示了这种分离:</p>
+<pre><code class="language-markdown"># skills/code-reviewer/SKILL.md
+---
+name: code-reviewer
+description: 审查 Python 代码的质量、风格和常见 bug。当用户提交代码审查请求、要求代码反馈或需要代码审计时使用。
+metadata:
+  pattern: reviewer
+  severity-levels: error,warning,info
+---
+
+你是一个 Python 代码审查器。严格遵循以下审查协议：
+
+第 1 步：加载 &#39;references/review-checklist.md&#39; 获取完整的审查标准。
+
+第 2 步：仔细阅读用户的代码。在批评之前先理解其目的。
+
+第 3 步：将检查清单中的每条规则应用于代码。对于发现的每个违规项：
+- 标注行号（或大致位置）
+- 分类严重程度：error（必须修复）、warning（应该修复）、info（建议考虑）
+- 解释为什么这是问题，而不只是指出是什么有问题
+- 提供带有修正代码的具体修复建议
+
+第 4 步：生成包含以下部分的结构化审查报告：
+- 摘要：代码功能、整体质量评估
+- 发现：按严重程度分组
+- 评分：1-10 分，并附简要理由
+- Top 3 建议：最具影响力的改进方向
+</code></pre>
+<hr>
+<h2 id="模式-4：Inversion（反转模式）"><a href="#模式-4：Inversion（反转模式）" class="headerlink" title="模式 4：Inversion（反转模式）"></a>模式 4：Inversion（反转模式）</h2>
+<p>Agent 天生倾向于立即猜测和生成。Inversion 模式翻转了这种动态，不是用户驱动提示、Agent 执行，而是 Agent 充当采访者。</p>
+<p>Inversion 依赖于明确的、不可商量的门控指令，强制 Agent 先收集上下文。它按顺序提出结构化问题，等待回答，然后再进入下一阶段。Agent 拒绝在完整了解需求和部署约束之前综合生成最终输出。</p>
+<p>下面是一个项目规划器 Skill 的示例:</p>
+<pre><code class="language-markdown"># skills/project-planner/SKILL.md
+---
+name: project-planner
+description: 通过结构化问题收集需求，然后生成计划来规划新的软件项目。当用户说&quot;我想构建&quot;、&quot;帮我规划&quot;、&quot;设计一个系统&quot;或&quot;开始新项目&quot;时使用。
+metadata:
+  pattern: inversion
+  interaction: multi-turn
+---
+
+你正在进行一次结构化的需求访谈。在所有阶段完成之前，不要开始构建或设计。
+
+## 第一阶段 — 问题发现
+- Q1：这个项目为用户解决什么问题？
+- Q2：主要用户是谁？他们的技术水平如何？
+- Q3：预期规模是多少？（每日用户数、数据量、请求速率）
+
+## 第二阶段 — 技术约束
+- Q4：你将使用什么部署环境？
+- Q5：你有任何技术栈要求或偏好吗？
+- Q6：不可妥协的需求是什么？（延迟、可用性、合规、预算）
+
+## 第三阶段 — 综合
+1. 加载 &#39;assets/plan-template.md&#39; 获取输出格式
+2. 使用收集到的需求填写模板的每个部分
+3. 将完成的计划展示给用户
+4. 询问是否准确反映需求，并按反馈迭代
+</code></pre>
+<hr>
+<h2 id="模式-5：Pipeline（流水线）"><a href="#模式-5：Pipeline（流水线）" class="headerlink" title="模式 5：Pipeline（流水线）"></a>模式 5：Pipeline（流水线）</h2>
+<p>对于复杂任务，你无法承受步骤被跳过或指令被忽视的代价。Pipeline 模式强制执行带有硬性检查点的严格顺序工作流。</p>
+<p>指令本身就充当工作流定义。通过实施明确的门控条件，Pipeline 确保 Agent 不能跳过复杂任务直接呈现未经验证的最终结果。它还可以在需要的步骤再引入不同的参考文件和模板，减少上下文浪费。</p>
+<p>以下文档流水线示例展示了这种思路:</p>
+<pre><code class="language-markdown"># skills/doc-pipeline/SKILL.md
+---
+name: doc-pipeline
+description: 通过多步流水线从 Python 源代码生成 API 文档。当用户要求为模块编写文档、生成 API 文档或从代码创建文档时使用。
+metadata:
+  pattern: pipeline
+  steps: &quot;4&quot;
+---
+
+你正在运行一个文档生成流水线。按顺序执行每个步骤。不要跳过步骤，如果某步骤失败则不要继续。
+
+## 第 1 步 — 解析与清点
+分析用户的 Python 代码，提取所有公开的类、函数和常量。以清单形式展示结果，并确认这是否是完整公共 API。
+
+## 第 2 步 — 生成文档字符串
+对每个缺少文档字符串的函数：
+- 加载 &#39;references/docstring-style.md&#39;
+- 严格按照风格指南生成文档字符串
+- 将每个生成结果提交用户批准
+在用户确认之前，不要进入第 3 步。
+
+## 第 3 步 — 组装文档
+加载 &#39;assets/api-doc-template.md&#39; 获取输出结构。将所有类、函数和文档字符串编译为单个 API 参考文档。
+
+## 第 4 步 — 质量检查
+对照 &#39;references/quality-checklist.md&#39; 审查：
+- 每个公共符号都已记录
+- 每个参数都有类型和描述
+- 每个函数至少有一个使用示例
+在呈现最终文档之前修复所有问题。
+</code></pre>
+<hr>
+<h2 id="如何选择正确的-Agent-Skill-模式"><a href="#如何选择正确的-Agent-Skill-模式" class="headerlink" title="如何选择正确的 Agent Skill 模式"></a>如何选择正确的 Agent Skill 模式</h2>
+<p>每种模式回答的是不同的问题。可以简单理解为：</p>
+<ul>
+<li>如果你要让 Agent 在某个领域遵守固定知识和规范，用 Tool Wrapper。</li>
+<li>如果你要强制输出保持固定格式，用 Generator。</li>
+<li>如果你要系统化地检查和打分，用 Reviewer。</li>
+<li>如果你要先问清需求再动手，用 Inversion。</li>
+<li>如果你要严格执行不可跳步的多阶段流程，用 Pipeline。</li>
+</ul>
+<p>原文这里给了一个决策树图，用来帮助你快速选择最适合的模式。</p>
+<hr>
+<h2 id="最后：模式可以组合"><a href="#最后：模式可以组合" class="headerlink" title="最后：模式可以组合"></a>最后：模式可以组合</h2>
+<p>这些模式并不相互排斥，它们是可以<strong>组合</strong>的。</p>
+<p>Pipeline Skill 可以在最后包含一个 Reviewer 步骤，用来复查自身的工作。Generator 可以在最开始依赖 Inversion 来收集必要变量，然后再填充模板。得益于 ADK 的 <code>SkillToolset</code> 和渐进式披露机制，你的 Agent 只在运行时为它实际需要的模式花费上下文 token。</p>
+<p>不要再试图把复杂而脆弱的指令塞进一个系统提示词里了。拆分你的工作流、应用正确的结构模式、构建可靠的 Agent。</p>
+<hr>
+<h2 id="立即开始"><a href="#立即开始" class="headerlink" title="立即开始"></a>立即开始</h2>
+<p>Agent Skills 规范是开源的，并在 ADK 中得到原生支持。你已经知道如何打包格式了。现在你知道如何设计内容了。用 Google Agent Development Kit 去构建更智能的 Agent 吧。</p>
+</div></header><footer class="post__foot u-cf"><ul class="post__tag u-fl"><li class="post__tag__item"><a class="post__tag__link" href="/tags/Agent/">Agent</a></li></ul></footer></article></main><footer class="foot"><div class="foot-copy">&copy; 2016 - 2021 Bruce</div></footer>
+<script src="/js/scroller.js"></script>
+
+<script src="/js/main.js"></script>
+</body></html>
