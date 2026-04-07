@@ -1,4 +1,4 @@
-<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8"><meta http-equiv="X-UA-Compatible" content="IE=edge"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="author" content="Bruce"><link rel="alternative" href="/atom.xml" title="布鲁斯的技术小屋" type="application/atom+xml"><link rel="icon" href="/favicon.png"><title>browser-use 详细时序图与逐步讲解 - 布鲁斯的技术小屋</title>
+<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8"><meta http-equiv="X-UA-Compatible" content="IE=edge"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="author" content="Bruce"><link rel="alternative" href="/atom.xml" title="布鲁斯的技术小屋" type="application/atom+xml"><link rel="icon" href="/favicon.png"><title>UI-TARS-Desktop(一)——Agent时序 - 布鲁斯的技术小屋</title>
 <link rel="stylesheet" href="/css/main.css">
 
 <link rel="stylesheet" href="/js/fancybox/jquery.fancybox.min.css">
@@ -6,8 +6,37 @@
 <script src="/js/jquery-3.1.1.min.js"></script>
 
 <script src="/js/fancybox/jquery.fancybox.min.js"></script>
-<meta name="generator" content="Hexo 5.4.0"></head><body style="opacity:0"><header class="head"><h1 class="head-title u-fl"><a href="/">布鲁斯的技术小屋</a></h1><nav class="head-nav u-fr"><ul class="head-nav__list"><li class="head-nav__item"><a class="head-nav__link" href="/tags">标签</a></li><li class="head-nav__item"><a class="head-nav__link" href="/archives">目录</a></li></ul></nav></header><main class="main"><article class="post"><header class="post__head"><time class="post__time" datetime="2025-12-01T07:24:18.000Z">2025 - 12 - 01 15:24:18</time><h1 class="post__title"><a href="/2025/browser-use-detailed-sequence/">browser-use 详细时序图与逐步讲解</a></h1><div class="post__main echo"><h1 id="browser-use-详细时序图与逐步讲解"><a href="#browser-use-详细时序图与逐步讲解" class="headerlink" title="browser-use 详细时序图与逐步讲解"></a>browser-use 详细时序图与逐步讲解</h1>
-<p>按“<strong>启动阶段 -&gt; 一轮 step -&gt; 单个 action -&gt; 收尾阶段</strong>”来拆解 <code>browser-use</code> 的详细时序。</p>
+<meta name="generator" content="Hexo 5.4.0"></head><body style="opacity:0"><header class="head"><h1 class="head-title u-fl"><a href="/">布鲁斯的技术小屋</a></h1><nav class="head-nav u-fr"><ul class="head-nav__list"><li class="head-nav__item"><a class="head-nav__link" href="/tags">标签</a></li><li class="head-nav__item"><a class="head-nav__link" href="/archives">目录</a></li></ul></nav></header><main class="main"><article class="post"><header class="post__head"><time class="post__time" datetime="2025-12-01T07:24:18.000Z">2025 - 12 - 01 15:24:18</time><h1 class="post__title"><a href="/2025/browser-use-detailed-sequence/">UI-TARS-Desktop(一)——Agent时序</a></h1><div class="post__main echo"><h1 id="ui-tars-desktop一agent时序"><a href="#ui-tars-desktop一agent时序" class="headerlink" title="UI-TARS-Desktop(一)——Agent时序"></a>UI-TARS-Desktop(一)——Agent时序</h1>
+<p>这篇文章从 Agent 运行时的视角，梳理 UI-TARS-Desktop 里一轮任务执行是如何被拆解、组织和推进的。按“<strong>启动阶段 -&gt; 一轮 step -&gt; 单个 action -&gt; 收尾阶段</strong>”这条主线，我们可以更容易看清 planner、navigator、validator 以及浏览器状态管理之间的协作关系。</p>
+<h2 id="总体框架图"><a href="#总体框架图" class="headerlink" title="总体框架图"></a>总体框架图</h2>
+<p>先看一张总览图，把任务、历史、网页状态、三类 agent 和 action 执行链路放到同一个视角里：</p>
+<pre><code class="language-mermaid">flowchart TB
+    task["User Task&lt;br/&gt;例：去某网站搜索商品，并返回最低价和链接"]
+    history["MessageManager / History&lt;br/&gt;- System prompt&lt;br/&gt;- 原始任务&lt;br/&gt;- 示例 tool call&lt;br/&gt;- 历史 plan&lt;br/&gt;- 历史模型输出&lt;br/&gt;- 历史 action result / error"]
+    browser["BrowserContext / Page / DOM&lt;br/&gt;- 当前 page&lt;br/&gt;- 其他 tabs&lt;br/&gt;- elementTree&lt;br/&gt;- selectorMap&lt;br/&gt;- screenshot&lt;br/&gt;- pixelsAbove / pixelsBelow"]
+    prompt["BasePrompt.buildBrowserStateUserMessage&lt;br/&gt;- 当前 URL / title&lt;br/&gt;- 其他 tabs&lt;br/&gt;- 可交互元素列表&lt;br/&gt;- 页面上下剩余内容&lt;br/&gt;- step 信息&lt;br/&gt;- action result / error&lt;br/&gt;- 可选截图"]
+
+    planner["PlannerAgent&lt;br/&gt;- Planner prompt&lt;br/&gt;- Message history&lt;br/&gt;- 当前 state message"]
+    navigator["NavigatorAgent&lt;br/&gt;- Navigator prompt&lt;br/&gt;- Message history&lt;br/&gt;- 当前 state message&lt;br/&gt;- action feedback"]
+    validator["ValidatorAgent&lt;br/&gt;- Validator prompt&lt;br/&gt;- Task to validate&lt;br/&gt;- 当前 state message&lt;br/&gt;- 可选 current plan"]
+
+    planOut["Planner Output&lt;br/&gt;- observation&lt;br/&gt;- done&lt;br/&gt;- challenges&lt;br/&gt;- next_steps&lt;br/&gt;- reasoning&lt;br/&gt;- web_task"]
+    navOut["Navigator Output&lt;br/&gt;- current_state&lt;br/&gt;- action[]"]
+    act["Action Execution&lt;br/&gt;- click / input / scroll&lt;br/&gt;- open tab / go url&lt;br/&gt;- switch tab / send key"]
+    valOut["Validator Output&lt;br/&gt;- is_valid&lt;br/&gt;- reason&lt;br/&gt;- answer"]
+    actionResults["ActionResults&lt;br/&gt;- extractedContent&lt;br/&gt;- error&lt;br/&gt;- includeInMemory&lt;br/&gt;- isDone"]
+
+    task --> history --> browser --> prompt
+    prompt --> planner
+    prompt --> navigator
+    prompt --> validator
+
+    planner --> planOut
+    navigator --> navOut --> act --> actionResults
+    validator --> valOut --> actionResults
+
+    planOut -. 写回 history .-> history
+    actionResults -. 写回 history .-> history</code></pre>
 <p>TLDR：</p>
 <p><code>Agent.run()</code> -&gt; <code>new Executor(...)</code> -&gt; 初始化 <code>BrowserContext / MessageManager / EventManager / PlannerAgent / NavigatorAgent / ValidatorAgent / ActionRegistry</code> -&gt; <code>Executor.execute()</code> 进入循环 -&gt; 每轮可能先 <code>planner.execute()</code> -&gt; 再 <code>navigator.execute()</code> -&gt; 若任务看起来完成，再 <code>validator.execute()</code> -&gt; 最后发出 task 结束事件并清理 browser context。</p>
 <p>关键代码入口：</p>
